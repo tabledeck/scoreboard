@@ -1,0 +1,34 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../app/db"
+  runtime  = "cloudflare"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Game {
+  id            String       @id // nanoid(6), e.g. "xK9f2m"
+  gameName      String       @default("")
+  status        String       @default("active") // "active" | "finished"
+  lowerIsBetter Boolean      @default(false)
+  maxPlayers    Int
+  createdAt     DateTime     @default(now())
+  finishedAt    DateTime?
+  players       GamePlayer[]
+
+  @@index([status])
+}
+
+model GamePlayer {
+  id         String  @id @default(cuid())
+  gameId     String
+  game       Game    @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  name       String
+  seat       Int
+  finalScore Int     @default(0)
+
+  @@unique([gameId, seat])
+  @@index([gameId])
+}

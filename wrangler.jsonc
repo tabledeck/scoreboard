@@ -1,0 +1,40 @@
+{
+  "name": "scoreboard",
+  "compatibility_date": "2026-03-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "./workers/app.ts",
+  "assets": {
+    "directory": "./build/client"
+  },
+  "routes": [
+    {
+      "pattern": "score.tabledeck.us",
+      "custom_domain": true
+    }
+  ],
+  "vars": {
+    "ENVIRONMENT": "production"
+  },
+  "d1_databases": [
+    {
+      "binding": "D1_DATABASE",
+      "database_name": "scoreboard",
+      "database_id": "f48dd623-94ec-46f0-a39a-5b42f3bca987",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SCOREBOARD_ROOM",
+        "class_name": "ScoreboardRoomDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ScoreboardRoomDO"]
+    }
+  ]
+}
