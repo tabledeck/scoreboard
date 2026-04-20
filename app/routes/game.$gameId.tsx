@@ -7,6 +7,17 @@ import { readGuestCookie } from "@tabledeck/game-room/server";
 import type { ScoreboardState, ScoreboardPlayer } from "~/domain/types";
 import type { ServerMessage } from "~/domain/messages";
 
+import Ticket from "~/components/tabledeck/Ticket";
+import Ledger from "~/components/tabledeck/Ledger";
+import BtnPrimary from "~/components/tabledeck/BtnPrimary";
+import BtnSecondary from "~/components/tabledeck/BtnSecondary";
+import CrownIcon from "~/components/icons/CrownIcon";
+import PencilIcon from "~/components/icons/PencilIcon";
+import LinkIcon from "~/components/icons/LinkIcon";
+import UndoIcon from "~/components/icons/UndoIcon";
+import FlagIcon from "~/components/icons/FlagIcon";
+import CloseIcon from "~/components/icons/CloseIcon";
+
 export function meta({ data }: Route.MetaArgs) {
   const name = (data as any)?.gameName || "Scoreboard";
   return [{ title: `${name} — Scoreboard` }];
@@ -185,55 +196,114 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
     }
   };
 
+  // ── Medallion class ────────────────────────────────────────────────────────
+  const medalClass = (rank: number) => {
+    if (rank === 0) return "gold";
+    if (rank === 1) return "silver";
+    if (rank === 2) return "bronze";
+    if (rank === 3) return "copper";
+    return "plain";
+  };
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-gray-950 text-white">
-      {/* Header */}
-      <div className="max-w-4xl mx-auto px-4 pt-6 pb-4">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <a href="/" className="text-gray-500 hover:text-gray-300 text-sm block mb-1">
-              ← New scoreboard
-            </a>
-            <h1 className="text-2xl font-bold text-white">
-              {gameName || "Scoreboard"}
-            </h1>
-            <p className="text-gray-500 text-sm mt-0.5">
-              {rounds.length === 0
-                ? "No rounds yet"
-                : `Round ${rounds.length}`}
-              {phase === "finished" && (
-                <span className="ml-2 text-amber-400 font-medium">Final</span>
-              )}
-              {lowerIsBetter && (
-                <span className="ml-2 text-gray-600">· lower wins</span>
-              )}
-            </p>
+    <div className="td-surface" style={{ minHeight: "100vh" }}>
+
+      {/* ── Header bar ──────────────────────────────────────────────────── */}
+      <div className="header-bar">
+        <div
+          style={{
+            maxWidth: 960,
+            margin: "0 auto",
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: 12,
+          }}
+        >
+          {/* Back link */}
+          <a
+            href="/"
+            style={{
+              fontFamily: "var(--serif)",
+              fontVariant: "small-caps",
+              fontSize: 11,
+              letterSpacing: "0.2em",
+              color: "var(--gold-hi)",
+              textDecoration: "none",
+              opacity: 0.75,
+              marginRight: 4,
+            }}
+          >
+            &larr; New
+          </a>
+
+          {/* Game name plaque */}
+          <div
+            style={{
+              fontFamily: "var(--serif)",
+              fontWeight: 600,
+              fontStyle: "italic",
+              fontSize: 26,
+              color: "var(--gold-hi)",
+              letterSpacing: "0.01em",
+              textShadow: "0 1px 0 rgba(0,0,0,0.5)",
+              flexShrink: 0,
+            }}
+          >
+            {gameName || "Scoreboard"}
           </div>
 
-          <div className="flex items-center gap-2">
+          {/* Ticket chips */}
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginLeft: 4 }}>
+            <Ticket
+              label="Round"
+              value={rounds.length === 0 ? "—" : String(rounds.length)}
+            />
+            <Ticket
+              label="Status"
+              value={phase === "finished" ? "Final" : "Playing"}
+              gold={phase === "finished"}
+            />
+            <Ticket
+              label="Direction"
+              value={lowerIsBetter ? "Lower Wins" : "Higher Wins"}
+            />
+          </div>
+
+          {/* Action group */}
+          <div style={{ display: "flex", gap: 8, marginLeft: "auto", flexWrap: "wrap" }}>
             <button
               onClick={copyLink}
-              className="text-sm bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded-lg transition-colors"
+              className="btn-secondary"
+              style={{ padding: "7px 14px", fontSize: 12, marginBottom: 0, gap: 6 }}
+              type="button"
             >
-              {copied ? "Copied!" : "Share link"}
+              <LinkIcon size={13} />
+              Share Link
             </button>
             {isHost && phase === "playing" && (
               <>
                 {rounds.length > 0 && (
                   <button
                     onClick={undoRound}
-                    className="text-sm bg-gray-800 hover:bg-gray-700 text-gray-400 px-3 py-1.5 rounded-lg transition-colors"
+                    className="btn-secondary"
+                    style={{ padding: "7px 14px", fontSize: 12, marginBottom: 0, gap: 6 }}
                     title="Undo last round"
+                    type="button"
                   >
+                    <UndoIcon size={13} />
                     Undo
                   </button>
                 )}
                 <button
                   onClick={() => setEndConfirmOpen(true)}
-                  className="text-sm bg-gray-800 hover:bg-red-900 text-gray-400 hover:text-red-300 px-3 py-1.5 rounded-lg transition-colors"
+                  className="btn-ghost"
+                  style={{ padding: "7px 14px", fontSize: 12, color: "rgba(246,239,224,0.55)", gap: 6 }}
+                  type="button"
                 >
-                  End game
+                  <FlagIcon size={13} />
+                  End Game
                 </button>
               </>
             )}
@@ -241,99 +311,287 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
         </div>
       </div>
 
-      {/* Leaderboard */}
-      <div className="max-w-4xl mx-auto px-4 pb-24 overflow-x-auto">
-        <table className="w-full text-sm border-collapse">
-          <thead>
-            <tr className="text-gray-400 border-b border-gray-800">
-              <th className="text-left py-2 pr-3 font-medium w-8">#</th>
-              <th className="text-left py-2 pr-4 font-medium">Player</th>
-              <th className="text-right py-2 px-3 font-medium w-20">Total</th>
-              {rounds.map((_, i) => (
-                <th key={i} className="text-right py-2 px-2 font-medium text-gray-600 w-14">
-                  R{i + 1}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rankedPlayers.map((player, rank) => {
-              const isFirst = rank === 0 && rounds.length > 0;
-              return (
-                <tr
-                  key={player.seat}
-                  className={`border-b border-gray-800/50 ${
-                    isFirst ? "bg-amber-950/20" : ""
-                  }`}
-                >
-                  <td className="py-3 pr-3 text-gray-500">
-                    {rank + 1}
-                    {isFirst && <span className="ml-1">👑</span>}
-                  </td>
-                  <td className="py-3 pr-4 font-medium text-white">
-                    {player.name}
-                    {player.connected && (
-                      <span
-                        className="ml-2 inline-block w-1.5 h-1.5 rounded-full bg-green-500 align-middle"
-                        title="Online"
-                      />
-                    )}
-                  </td>
-                  <td className="py-3 px-3 text-right font-bold text-lg text-white">
-                    {player.total}
-                  </td>
-                  {rounds.map((round, i) => (
-                    <td key={i} className="py-3 px-2 text-right text-gray-400">
-                      {round[player.seat] ?? 0}
-                    </td>
+      {/* ── Leaderboard ──────────────────────────────────────────────────── */}
+      <div
+        style={{
+          maxWidth: 960,
+          margin: "0 auto",
+          padding: "28px 16px",
+          paddingBottom: phase === "finished" ? 100 : 120,
+        }}
+      >
+        <Ledger>
+          {/* Scroll curl ornament */}
+          <div className="scroll-curl">~ ~ ~</div>
+
+          {/* Table wrapper for overflow on narrow screens */}
+          <div style={{ overflowX: "auto", position: "relative", zIndex: 1, padding: "0 4px 4px" }}>
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                tableLayout: "auto",
+              }}
+            >
+              <thead>
+                <tr>
+                  <th className="ledger-th" style={{ textAlign: "left", width: 48, paddingLeft: 16 }}>#</th>
+                  <th className="ledger-th" style={{ textAlign: "left" }}>Player</th>
+                  <th className="ledger-th" style={{ textAlign: "right", paddingRight: 16, width: 80 }}>Total</th>
+                  {rounds.map((_, i) => (
+                    <th
+                      key={i}
+                      className="ledger-th"
+                      style={{ textAlign: "right", width: 52, paddingRight: 8 }}
+                    >
+                      R{i + 1}
+                    </th>
                   ))}
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              </thead>
+              <tbody>
+                {rankedPlayers.map((player, rank) => {
+                  const isFirst = rank === 0 && rounds.length > 0;
+                  return (
+                    <tr
+                      key={player.seat}
+                      className={`ledger-row${isFirst ? " leader" : ""}`}
+                    >
+                      {/* Rank cell */}
+                      <td
+                        style={{
+                          paddingLeft: 16,
+                          paddingRight: 8,
+                          width: 48,
+                          verticalAlign: "middle",
+                        }}
+                      >
+                        <div
+                          className={`rank-medallion ${medalClass(rank)}`}
+                          style={{ margin: "0 auto" }}
+                        >
+                          {isFirst ? (
+                            <CrownIcon
+                              size={16}
+                            />
+                          ) : (
+                            <span>{rank + 1}</span>
+                          )}
+                        </div>
+                      </td>
 
-        {rankedPlayers.length === 0 && (
-          <p className="text-gray-500 text-center py-12">Loading players...</p>
-        )}
+                      {/* Player name */}
+                      <td style={{ paddingRight: 12, verticalAlign: "middle" }}>
+                        <span
+                          style={{
+                            fontFamily: "var(--sans)",
+                            fontWeight: 600,
+                            fontSize: 15,
+                            color: "var(--ink)",
+                          }}
+                        >
+                          {player.name}
+                        </span>
+                        {player.connected && (
+                          <span
+                            className="status-dot"
+                            title="Online"
+                            style={{ marginLeft: 7, verticalAlign: "middle" }}
+                          />
+                        )}
+                      </td>
+
+                      {/* Total */}
+                      <td
+                        style={{
+                          paddingRight: 16,
+                          textAlign: "right",
+                          verticalAlign: "middle",
+                          width: 80,
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontFamily: "var(--mono)",
+                            fontWeight: 700,
+                            fontSize: 18,
+                            color: "var(--ink)",
+                            fontVariantNumeric: "tabular-nums",
+                          }}
+                        >
+                          {player.total}
+                        </span>
+                      </td>
+
+                      {/* Round cells */}
+                      {rounds.map((round, i) => (
+                        <td
+                          key={i}
+                          style={{
+                            textAlign: "right",
+                            paddingRight: 8,
+                            width: 52,
+                            verticalAlign: "middle",
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontFamily: "var(--mono)",
+                              fontSize: 13,
+                              color: "var(--ink-faint)",
+                              fontVariantNumeric: "tabular-nums",
+                            }}
+                          >
+                            {round[player.seat] ?? 0}
+                          </span>
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+
+            {rankedPlayers.length === 0 && (
+              <div className="empty-state">
+                Loading players&hellip;
+              </div>
+            )}
+          </div>
+        </Ledger>
       </div>
 
-      {/* Finished banner */}
+      {/* ── Finished banner ──────────────────────────────────────────────── */}
       {phase === "finished" && (
-        <div className="fixed inset-x-0 bottom-0 bg-gray-900 border-t border-amber-600/30 p-4">
-          <div className="max-w-4xl mx-auto flex items-center justify-between gap-4">
+        <div className="finished-banner">
+          <div
+            style={{
+              maxWidth: 960,
+              margin: "0 auto",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 16,
+            }}
+          >
             <div>
-              <p className="text-amber-400 font-semibold">Game over!</p>
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  marginBottom: 4,
+                }}
+              >
+                {/* Inline wax-seal "FINAL" badge */}
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 48,
+                    height: 48,
+                    borderRadius: "50%",
+                    background:
+                      "radial-gradient(circle at 40% 40%, #a23138 0%, #6b1a21 58%, #4b1015 100%)",
+                    boxShadow:
+                      "inset 0 2px 2px rgba(255,255,255,0.25),inset 0 -3px 4px rgba(0,0,0,0.4),0 3px 8px rgba(0,0,0,0.5)",
+                    transform: "rotate(-8deg)",
+                    flexShrink: 0,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontFamily: "var(--serif)",
+                      fontVariant: "small-caps",
+                      fontWeight: 700,
+                      fontSize: 9,
+                      letterSpacing: "0.18em",
+                      color: "rgba(246,239,224,0.88)",
+                    }}
+                  >
+                    Final
+                  </span>
+                </span>
+                <span
+                  style={{
+                    fontFamily: "var(--serif)",
+                    fontWeight: 600,
+                    fontVariant: "small-caps",
+                    fontSize: 16,
+                    letterSpacing: "0.14em",
+                    color: "var(--walnut)",
+                  }}
+                >
+                  Game Over
+                </span>
+              </div>
               {rankedPlayers[0] && (
-                <p className="text-gray-300 text-sm">
-                  Winner: <span className="font-medium text-white">{rankedPlayers[0].name}</span>
-                  {" "}with {rankedPlayers[0].total} points
+                <p
+                  style={{
+                    fontFamily: "var(--sans)",
+                    fontSize: 14,
+                    color: "var(--ink-soft)",
+                    margin: 0,
+                  }}
+                >
+                  Winner:{" "}
+                  <span
+                    style={{
+                      fontFamily: "var(--serif)",
+                      fontVariant: "small-caps",
+                      fontWeight: 600,
+                      color: "var(--gold-lo)",
+                      letterSpacing: "0.08em",
+                    }}
+                  >
+                    {rankedPlayers[0].name}
+                  </span>
+                  {" "}
+                  <span
+                    style={{
+                      fontFamily: "var(--mono)",
+                      fontSize: 15,
+                      fontWeight: 700,
+                      color: "var(--ink)",
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  >
+                    {rankedPlayers[0].total}
+                  </span>{" "}
+                  <span style={{ color: "var(--ink-faint)" }}>pts</span>
                 </p>
               )}
             </div>
-            <a
-              href="/"
-              className="bg-amber-600 hover:bg-amber-500 text-white font-semibold px-4 py-2 rounded-lg text-sm transition-colors"
-            >
-              New game
+            <a href="/" className="btn-primary" style={{ flexShrink: 0, textDecoration: "none" }}>
+              New Game
             </a>
           </div>
         </div>
       )}
 
-      {/* Score round FAB — host only */}
+      {/* ── Score round FAB — host only ───────────────────────────────────── */}
       {isHost && phase === "playing" && (
-        <div className="fixed bottom-6 right-6">
+        <div style={{ position: "fixed", bottom: 24, right: 24, zIndex: 30 }}>
           <button
             onClick={openScoring}
-            className="bg-amber-600 hover:bg-amber-500 text-white font-semibold rounded-full px-6 py-3 shadow-lg transition-colors text-base"
+            className="score-fab"
+            type="button"
           >
-            + Score round
+            <PencilIcon size={16} />
+            Score Round
           </button>
         </div>
       )}
 
-      {/* Score entry modal */}
+      {/* ── Copied toast ──────────────────────────────────────────────────── */}
+      {copied && (
+        <div className="toast-stamp">
+          Link Copied
+        </div>
+      )}
+
+      {/* ── Score entry modal ────────────────────────────────────────────── */}
       {scoringOpen && (
         <ScoreModal
           players={players.filter((p): p is ScoreboardPlayer => p != null)}
@@ -347,27 +605,56 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
         />
       )}
 
-      {/* End game confirm */}
+      {/* ── End game confirm ─────────────────────────────────────────────── */}
       {endConfirmOpen && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-sm">
-            <h3 className="text-white font-semibold text-lg mb-2">End game?</h3>
-            <p className="text-gray-400 text-sm mb-6">
-              This will finalize scores and show the final leaderboard to everyone.
-            </p>
-            <div className="flex gap-3">
-              <button
-                onClick={() => setEndConfirmOpen(false)}
-                className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 font-medium rounded-lg py-2 transition-colors"
+        <div className="modal-scroll-overlay">
+          <div className="modal-scroll">
+            <div className="modal-inner">
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  justifyContent: "space-between",
+                  marginBottom: 12,
+                }}
               >
-                Cancel
-              </button>
-              <button
-                onClick={endGame}
-                className="flex-1 bg-red-700 hover:bg-red-600 text-white font-medium rounded-lg py-2 transition-colors"
-              >
-                End game
-              </button>
+                <h3>End Game?</h3>
+                <button
+                  onClick={() => setEndConfirmOpen(false)}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                    color: "var(--ink-faint)",
+                    padding: 2,
+                    marginTop: 2,
+                  }}
+                  aria-label="Cancel"
+                >
+                  <CloseIcon size={16} />
+                </button>
+              </div>
+              <p>
+                This will finalize scores and show the final leaderboard to
+                everyone. This cannot be undone.
+              </p>
+              <div style={{ display: "flex", gap: 10 }}>
+                <BtnSecondary
+                  onClick={() => setEndConfirmOpen(false)}
+                  style={{ flex: 1, marginBottom: 0 }}
+                  type="button"
+                >
+                  Cancel
+                </BtnSecondary>
+                <button
+                  onClick={endGame}
+                  className="btn-destructive"
+                  style={{ flex: 1 }}
+                  type="button"
+                >
+                  End Game
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -408,7 +695,9 @@ function ScoreModal({
       e.preventDefault();
       if (idx < players.length - 1) {
         // Move focus to next input
-        const next = document.getElementById(`score-input-${idx + 1}`) as HTMLInputElement | null;
+        const next = document.getElementById(
+          `score-input-${idx + 1}`,
+        ) as HTMLInputElement | null;
         next?.focus();
         next?.select();
       } else {
@@ -418,57 +707,104 @@ function ScoreModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center p-4 z-50">
-      <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-sm">
-        <div className="flex items-center justify-between mb-5">
-          <h3 className="text-white font-semibold text-lg">
-            Round {roundNumber} scores
-          </h3>
-          <button
-            onClick={onClose}
-            className="text-gray-500 hover:text-gray-300 transition-colors"
+    <div className="modal-scroll-overlay">
+      <div className="modal-scroll">
+        <div className="modal-inner">
+          {/* Header */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "space-between",
+              marginBottom: 16,
+            }}
           >
-            ✕
-          </button>
-        </div>
+            <h3>
+              Round {roundNumber} Scores
+            </h3>
+            <button
+              onClick={onClose}
+              style={{
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                color: "var(--ink-faint)",
+                padding: 2,
+                marginTop: 2,
+              }}
+              aria-label="Close"
+            >
+              <CloseIcon size={16} />
+            </button>
+          </div>
 
-        <div className="flex flex-col gap-3 mb-6">
-          {players.map((player, idx) => (
-            <div key={player.seat} className="flex items-center gap-3">
-              <label
-                htmlFor={`score-input-${idx}`}
-                className="flex-1 text-gray-300 text-sm font-medium"
+          {/* Player score inputs */}
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+              marginBottom: 20,
+            }}
+          >
+            {players.map((player, idx) => (
+              <div
+                key={player.seat}
+                style={{ display: "flex", alignItems: "center", gap: 12 }}
               >
-                {player.name}
-              </label>
-              <input
-                id={`score-input-${idx}`}
-                ref={idx === 0 ? firstInputRef : undefined}
-                type="number"
-                inputMode="numeric"
-                value={scoreInputs[player.seat] ?? "0"}
-                onChange={(e) => onChange(player.seat, e.target.value)}
-                onFocus={(e) => e.target.select()}
-                onKeyDown={(e) => handleKeyDown(e, idx)}
-                className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-right text-sm focus:outline-none focus:border-amber-600"
-              />
-            </div>
-          ))}
-        </div>
+                <label
+                  htmlFor={`score-input-${idx}`}
+                  style={{
+                    flex: 1,
+                    fontFamily: "var(--sans)",
+                    fontWeight: 600,
+                    fontSize: 14,
+                    color: "var(--ink-soft)",
+                    cursor: "pointer",
+                  }}
+                >
+                  {player.name}
+                </label>
+                <input
+                  id={`score-input-${idx}`}
+                  ref={idx === 0 ? firstInputRef : undefined}
+                  type="number"
+                  inputMode="numeric"
+                  value={scoreInputs[player.seat] ?? "0"}
+                  onChange={(e) => onChange(player.seat, e.target.value)}
+                  onFocus={(e) => e.target.select()}
+                  onKeyDown={(e) => handleKeyDown(e, idx)}
+                  className="td-input"
+                  style={{
+                    width: 80,
+                    textAlign: "right",
+                    fontFamily: "var(--mono)",
+                    fontWeight: 700,
+                    fontSize: 16,
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                />
+              </div>
+            ))}
+          </div>
 
-        <div className="flex gap-3">
-          <button
-            onClick={onClose}
-            className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 font-medium rounded-lg py-2.5 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onSubmit}
-            className="flex-1 bg-amber-600 hover:bg-amber-500 text-white font-semibold rounded-lg py-2.5 transition-colors"
-          >
-            Submit
-          </button>
+          {/* Actions */}
+          <div style={{ display: "flex", gap: 10 }}>
+            <BtnSecondary
+              onClick={onClose}
+              style={{ flex: 1, marginBottom: 0 }}
+              type="button"
+            >
+              Cancel
+            </BtnSecondary>
+            <BtnPrimary
+              onClick={onSubmit}
+              style={{ flex: 1, marginBottom: 0 }}
+              type="button"
+            >
+              Submit
+            </BtnPrimary>
+          </div>
         </div>
       </div>
     </div>

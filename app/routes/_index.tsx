@@ -1,6 +1,9 @@
 import { useState, useRef } from "react";
 import { useNavigate } from "react-router";
 import type { Route } from "./+types/_index";
+import BtnPrimary from "~/components/tabledeck/BtnPrimary";
+import ClipboardIcon from "~/components/icons/ClipboardIcon";
+import CloseIcon from "~/components/icons/CloseIcon";
 
 export function meta() {
   return [
@@ -81,134 +84,302 @@ export default function Index(_: Route.ComponentProps) {
   };
 
   return (
-    <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center p-4">
-      {/* Back to tabledeck */}
+    <div
+      className="td-surface"
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "24px 16px",
+      }}
+    >
+      {/* Back link */}
       <a
         href="https://tabledeck.us"
-        className="absolute top-4 left-4 text-gray-500 hover:text-gray-300 text-sm"
+        className="btn-ghost"
+        style={{
+          position: "absolute",
+          top: 16,
+          left: 16,
+          fontSize: 11,
+          letterSpacing: "0.22em",
+        }}
       >
-        ← tabledeck.us
+        &larr; Return to Tabledeck
       </a>
 
       {/* Hero */}
-      <div className="text-center mb-10">
-        <div className="text-6xl mb-3">📋</div>
-        <h1 className="text-5xl font-bold text-white mb-3">Scoreboard</h1>
-        <p className="text-gray-400 text-lg max-w-md">
+      <div style={{ textAlign: "center", marginBottom: 32 }}>
+        <div style={{ marginBottom: 14, color: "var(--gold)", display: "flex", justifyContent: "center" }}>
+          <ClipboardIcon size={52} />
+        </div>
+        <h1
+          style={{
+            fontFamily: "var(--serif)",
+            fontVariant: "small-caps",
+            fontWeight: 700,
+            fontSize: 48,
+            color: "var(--gold-hi)",
+            letterSpacing: "0.08em",
+            margin: "0 0 6px",
+            textShadow:
+              "0 2px 0 rgba(0,0,0,0.5), 0 0 22px rgba(201,162,74,0.2)",
+          }}
+        >
+          Scoreboard
+        </h1>
+        {/* Gold rule */}
+        <div
+          style={{
+            height: 1,
+            background:
+              "linear-gradient(90deg,transparent,var(--gold) 30%,var(--gold-hi) 50%,var(--gold) 70%,transparent)",
+            margin: "6px auto 12px",
+            width: 200,
+          }}
+        />
+        <p
+          style={{
+            fontFamily: "var(--sans)",
+            fontSize: 15,
+            color: "rgba(246,239,224,0.65)",
+            maxWidth: 360,
+            lineHeight: 1.55,
+            margin: "0 auto",
+          }}
+        >
           Live scores for any game — hearts, nertz, mexican train, and more.
           Share the link so everyone can follow along.
         </p>
       </div>
 
-      {/* Create form */}
-      <div className="bg-gray-900 rounded-2xl p-8 w-full max-w-md border border-gray-800">
-        <h2 className="text-white font-semibold text-xl mb-6">New Scoreboard</h2>
+      {/* Create form — inside a lobby card */}
+      <div
+        className="lobby-card"
+        style={{ position: "relative" }}
+      >
+        {/* Card content sits above texture layer */}
+        <div style={{ position: "relative", zIndex: 1, padding: "28px 28px 24px" }}>
 
-        {/* Game name */}
-        <label className="text-gray-400 text-sm block mb-2" htmlFor="gameName">
-          Game name <span className="text-gray-600">(optional)</span>
-        </label>
-        <input
-          id="gameName"
-          type="text"
-          value={gameName}
-          onChange={(e) => setGameName(e.target.value)}
-          placeholder="e.g. Friday Night Hearts"
-          maxLength={60}
-          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white placeholder-gray-500 text-sm mb-5 focus:outline-none focus:border-amber-600"
-        />
+          {/* Card heading */}
+          <h2
+            style={{
+              fontFamily: "var(--serif)",
+              fontVariant: "small-caps",
+              fontWeight: 600,
+              fontSize: 18,
+              letterSpacing: "0.18em",
+              color: "var(--walnut)",
+              margin: "0 0 20px",
+              paddingBottom: 10,
+              borderBottom: "1.5px solid rgba(26,22,18,0.25)",
+            }}
+          >
+            New Scoreboard
+          </h2>
 
-        {/* Scoring direction */}
-        <label className="text-gray-400 text-sm block mb-2">
-          Scoring direction
-        </label>
-        <div className="flex gap-2 mb-5">
-          <button
-            onClick={() => setLowerIsBetter(false)}
-            className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
-              !lowerIsBetter
-                ? "bg-amber-600 text-white"
-                : "bg-gray-800 text-gray-300 hover:bg-gray-700"
-            }`}
+          {/* Game name */}
+          <label
+            htmlFor="gameName"
+            style={{
+              fontFamily: "var(--serif)",
+              fontVariant: "small-caps",
+              letterSpacing: "0.18em",
+              fontSize: 11,
+              color: "var(--ink-soft)",
+              display: "block",
+              marginBottom: 8,
+            }}
           >
-            Higher wins
-          </button>
-          <button
-            onClick={() => setLowerIsBetter(true)}
-            className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
-              lowerIsBetter
-                ? "bg-amber-600 text-white"
-                : "bg-gray-800 text-gray-300 hover:bg-gray-700"
-            }`}
+            Game Name{" "}
+            <span style={{ color: "var(--ink-faint)", fontVariant: "normal", fontSize: 10 }}>
+              (optional)
+            </span>
+          </label>
+          <input
+            id="gameName"
+            type="text"
+            value={gameName}
+            onChange={(e) => setGameName(e.target.value)}
+            placeholder="e.g. Friday Night Hearts"
+            maxLength={60}
+            className="td-input"
+            style={{ marginBottom: 20 }}
+          />
+
+          {/* Scoring direction */}
+          <label
+            style={{
+              fontFamily: "var(--serif)",
+              fontVariant: "small-caps",
+              letterSpacing: "0.18em",
+              fontSize: 11,
+              color: "var(--ink-soft)",
+              display: "block",
+              marginBottom: 8,
+            }}
           >
-            Lower wins
-          </button>
+            Scoring Direction
+          </label>
+          <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+            <button
+              onClick={() => setLowerIsBetter(false)}
+              className={!lowerIsBetter ? "ticket ticket-gold" : "ticket"}
+              style={{ flex: 1, cursor: "pointer", border: "none", textAlign: "center", clipPath: "none", borderRadius: 5 }}
+              type="button"
+            >
+              <span className="ticket-label">Direction</span>
+              <span className="ticket-value">Higher Wins</span>
+            </button>
+            <button
+              onClick={() => setLowerIsBetter(true)}
+              className={lowerIsBetter ? "ticket ticket-gold" : "ticket"}
+              style={{ flex: 1, cursor: "pointer", border: "none", textAlign: "center", clipPath: "none", borderRadius: 5 }}
+              type="button"
+            >
+              <span className="ticket-label">Direction</span>
+              <span className="ticket-value">Lower Wins</span>
+            </button>
+          </div>
+          <p
+            style={{
+              fontFamily: "var(--sans)",
+              fontSize: 11,
+              color: "var(--ink-faint)",
+              marginBottom: 20,
+              marginTop: 4,
+            }}
+          >
+            {lowerIsBetter
+              ? "Lowest total score wins — hearts, golf, etc."
+              : "Highest total score wins — most games"}
+          </p>
+
+          {/* Players */}
+          <label
+            style={{
+              fontFamily: "var(--serif)",
+              fontVariant: "small-caps",
+              letterSpacing: "0.18em",
+              fontSize: 11,
+              color: "var(--ink-soft)",
+              display: "block",
+              marginBottom: 8,
+            }}
+          >
+            Players{" "}
+            <span style={{ color: "var(--ink-faint)", fontVariant: "normal", fontSize: 10 }}>
+              ({playerNames.length}/12)
+            </span>
+          </label>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 8 }}>
+            {playerNames.map((name, i) => (
+              <div key={i} className="seat-row">
+                {/* Seat number */}
+                <span className="seat-number">
+                  {String(i + 1).padStart(2, "0")}
+                </span>
+                <input
+                  ref={i === playerNames.length - 1 ? lastInputRef : undefined}
+                  type="text"
+                  value={name}
+                  onChange={(e) => updatePlayer(i, e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      if (i === playerNames.length - 1) addPlayer();
+                    }
+                  }}
+                  placeholder={`Player ${i + 1}`}
+                  maxLength={24}
+                  className="td-input"
+                  style={{ flex: 1 }}
+                />
+                {playerNames.length > 2 && (
+                  <button
+                    onClick={() => removePlayer(i)}
+                    aria-label="Remove player"
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      cursor: "pointer",
+                      color: "var(--ink-faint)",
+                      display: "flex",
+                      alignItems: "center",
+                      padding: "4px 2px",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <CloseIcon size={14} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {playerNames.length < 12 && (
+            <button
+              onClick={addPlayer}
+              style={{
+                fontFamily: "var(--serif)",
+                fontVariant: "small-caps",
+                fontWeight: 600,
+                fontSize: 12,
+                letterSpacing: "0.18em",
+                color: "var(--gold-lo)",
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                padding: "4px 0",
+                marginBottom: 16,
+                textDecoration: "underline",
+                textDecorationStyle: "dashed",
+                textUnderlineOffset: 4,
+              }}
+              type="button"
+            >
+              + Seat another player
+            </button>
+          )}
+
+          {error && (
+            <p
+              style={{
+                fontFamily: "var(--serif)",
+                fontStyle: "italic",
+                fontSize: 13,
+                color: "var(--wine-mid)",
+                marginBottom: 12,
+              }}
+            >
+              {error}
+            </p>
+          )}
+
+          <BtnPrimary
+            onClick={createGame}
+            disabled={creating}
+            style={{ width: "100%", marginTop: 8 }}
+            type="button"
+          >
+            {creating ? "Creating..." : "Start Scoreboard"}
+          </BtnPrimary>
+
+          <p
+            style={{
+              fontFamily: "var(--sans)",
+              fontSize: 11,
+              color: "var(--ink-faint)",
+              textAlign: "center",
+              marginTop: 14,
+            }}
+          >
+            You'll get a shareable link — anyone with it can watch live
+          </p>
         </div>
-        <p className="text-gray-500 text-xs mb-5 -mt-3">
-          {lowerIsBetter
-            ? "Lowest total score wins — hearts, golf, etc."
-            : "Highest total score wins — most games"}
-        </p>
-
-        {/* Players */}
-        <label className="text-gray-400 text-sm block mb-2">
-          Players <span className="text-gray-600">({playerNames.length}/12)</span>
-        </label>
-        <div className="flex flex-col gap-2 mb-3">
-          {playerNames.map((name, i) => (
-            <div key={i} className="flex gap-2">
-              <input
-                ref={i === playerNames.length - 1 ? lastInputRef : undefined}
-                type="text"
-                value={name}
-                onChange={(e) => updatePlayer(i, e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    if (i === playerNames.length - 1) addPlayer();
-                  }
-                }}
-                placeholder={`Player ${i + 1}`}
-                maxLength={24}
-                className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-amber-600"
-              />
-              {playerNames.length > 2 && (
-                <button
-                  onClick={() => removePlayer(i)}
-                  className="text-gray-500 hover:text-red-400 px-2 transition-colors"
-                  aria-label="Remove player"
-                >
-                  ✕
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-
-        {playerNames.length < 12 && (
-          <button
-            onClick={addPlayer}
-            className="text-amber-500 hover:text-amber-400 text-sm mb-5 transition-colors"
-          >
-            + Add player
-          </button>
-        )}
-
-        {error && (
-          <p className="text-red-400 text-sm mb-4">{error}</p>
-        )}
-
-        <button
-          onClick={createGame}
-          disabled={creating}
-          className="w-full bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-semibold rounded-xl py-3 text-lg transition-colors mt-2"
-        >
-          {creating ? "Creating..." : "Start Scoreboard"}
-        </button>
-
-        <p className="text-gray-500 text-xs text-center mt-4">
-          You'll get a shareable link — anyone with it can watch the live leaderboard
-        </p>
       </div>
     </div>
   );
