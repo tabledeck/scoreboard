@@ -19,7 +19,7 @@
     --bone-deep:  #c0b087;
     --ink:        #1a1612;
     --ink-soft:   #3a2f25;
-    --ink-faint:  rgba(26,22,18,0.55);
+    --ink-faint:  rgba(26,22,18,0.72);
 
     /* Scoreboard theme — walnut + gold */
     --walnut:     #3a2416;
@@ -143,9 +143,9 @@
   .ticket .ticket-label {
     font-family: var(--serif);
     font-variant: small-caps;
-    font-weight: 600;
-    font-size: 10.5px;
-    letter-spacing: 0.26em;
+    font-weight: 700;
+    font-size: 12px;
+    letter-spacing: 0.18em;
     color: var(--ink-soft);
     display: block;
     line-height: 1;
@@ -153,7 +153,7 @@
   .ticket .ticket-value {
     font-family: var(--serif);
     font-weight: 600;
-    font-size: 17px;
+    font-size: 19px;
     line-height: 1.2;
     margin-top: 3px;
     color: var(--ink);
@@ -213,10 +213,10 @@
   .ledger-th {
     font-family: var(--serif);
     font-variant: small-caps;
-    font-weight: 600;
-    font-size: 11px;
-    letter-spacing: 0.22em;
-    color: var(--ink-faint);
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.16em;
+    color: var(--ink-soft);
     padding: 12px 8px 8px;
     border-bottom: 1.5px solid rgba(26,22,18,0.25);
     white-space: nowrap;
@@ -289,9 +289,9 @@
     color: var(--walnut);
     font-family: var(--serif);
     font-variant: small-caps;
-    font-weight: 600;
-    font-size: 13px;
-    letter-spacing: 0.22em;
+    font-weight: 700;
+    font-size: 14.5px;
+    letter-spacing: 0.18em;
     cursor: pointer;
     box-shadow:
       inset 0 1px 0 rgba(255,255,255,0.55),
@@ -332,9 +332,9 @@
     color: var(--walnut);
     font-family: var(--serif);
     font-variant: small-caps;
-    font-weight: 600;
-    font-size: 13px;
-    letter-spacing: 0.22em;
+    font-weight: 700;
+    font-size: 14.5px;
+    letter-spacing: 0.18em;
     cursor: pointer;
     box-shadow:
       inset 0 1px 0 rgba(255,255,255,0.8),
@@ -368,9 +368,9 @@
     color: var(--gold-hi);
     font-family: var(--serif);
     font-variant: small-caps;
-    font-weight: 600;
-    font-size: 12px;
-    letter-spacing: 0.22em;
+    font-weight: 700;
+    font-size: 13.5px;
+    letter-spacing: 0.18em;
     cursor: pointer;
     text-decoration: underline;
     text-decoration-style: dashed;
@@ -392,9 +392,9 @@
     color: var(--bone);
     font-family: var(--serif);
     font-variant: small-caps;
-    font-weight: 600;
-    font-size: 13px;
-    letter-spacing: 0.22em;
+    font-weight: 700;
+    font-size: 14.5px;
+    letter-spacing: 0.18em;
     cursor: pointer;
     box-shadow:
       inset 0 1px 0 rgba(255,255,255,0.25),
@@ -439,8 +439,8 @@
     font-family: var(--serif);
     font-variant: small-caps;
     font-weight: 700;
-    font-size: 14px;
-    letter-spacing: 0.22em;
+    font-size: 15.5px;
+    letter-spacing: 0.18em;
     cursor: pointer;
     box-shadow:
       inset 0 1px 0 rgba(255,255,255,0.55),
@@ -635,13 +635,15 @@
   /* ========== SCORE DELTA ========== */
   .delta-gain {
     font-family: var(--mono);
-    font-size: 11px;
+    font-size: 12.5px;
+    font-weight: 600;
     color: var(--forest);
     font-variant-numeric: tabular-nums;
   }
   .delta-loss {
     font-family: var(--mono);
-    font-size: 11px;
+    font-size: 12.5px;
+    font-weight: 600;
     color: var(--wine-mid);
     font-variant-numeric: tabular-nums;
   }
@@ -659,8 +661,8 @@
     font-family: var(--serif);
     font-variant: small-caps;
     font-weight: 700;
-    font-size: 13px;
-    letter-spacing: 0.2em;
+    font-size: 14px;
+    letter-spacing: 0.16em;
     color: var(--walnut);
     box-shadow:
       inset 0 1px 0 rgba(255,255,255,0.6),
@@ -682,6 +684,84 @@
   }
 
 } /* end @layer components */
+
+/* ========== MOBILE RESPONSIVENESS ========== */
+
+/*
+ * Modal scroll: on mobile (< 640px) already aligns to flex-end
+ * (bottom sheet style). Ensure it doesn't overflow the viewport.
+ */
+@media (max-width: 639px) {
+  .modal-scroll {
+    padding: 22px 18px 20px;
+    max-height: calc(100dvh - 48px);
+    overflow-y: auto;
+  }
+  .modal-scroll-overlay {
+    padding: 8px 10px;
+  }
+}
+
+/*
+ * Ledger: the table wrapper already has overflow-x: auto in JSX.
+ * Ensure the minimum column widths are honoured.
+ */
+@media (max-width: 639px) {
+  .ledger {
+    border-radius: 6px;
+  }
+  .ledger-th,
+  .ledger-row td {
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+}
+
+/*
+ * Header bar: tighten up on phones.
+ */
+@media (max-width: 639px) {
+  .header-bar {
+    padding: 10px 12px;
+  }
+}
+
+/*
+ * Score FAB: push up from system nav bar (safe-area).
+ */
+.score-fab {
+  padding-bottom: max(14px, env(safe-area-inset-bottom, 14px));
+}
+
+@media (max-width: 639px) {
+  /* Score FAB closer to edge on phones */
+  .score-fab {
+    padding-bottom: 14px;
+  }
+}
+
+/*
+ * Finished banner: padding for safe-area-inset at bottom.
+ */
+.finished-banner {
+  padding-bottom: max(14px, env(safe-area-inset-bottom, 14px));
+}
+
+/*
+ * Ticket chips in header: allow wrap instead of overflow.
+ */
+@media (max-width: 479px) {
+  .ticket {
+    padding: 6px 16px;
+  }
+  .ticket .ticket-value {
+    font-size: 16px;
+  }
+  .ticket .ticket-label {
+    font-size: 11.5px;
+    letter-spacing: 0.16em;
+  }
+}
 
 /* ========== GLOBAL UTILS ========== */
 
