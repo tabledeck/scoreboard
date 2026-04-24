@@ -30,6 +30,9 @@ export default {
     const context = new RouterContextProvider();
     (context as any).cloudflare = { env, ctx };
 
-    return createRequestHandler(buildImport, "production")(request, context);
+    return createRequestHandler(buildImport, "production")(
+      request,
+      context as any,
+    );
   },
 } satisfies ExportedHandler<Env>;

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ScoreboardState } from "./types";
 
 // ── Client → Server ───────────────────────────────────────────────────────────
 
@@ -44,7 +45,26 @@ export interface GameEndedMsg {
   totals: number[];
 }
 
+export interface GameStateMsg {
+  type: "game_state";
+  state: ScoreboardState;
+}
+
+export interface PlayerJoinedMsg {
+  type: "player_joined";
+  seat: number;
+  name: string;
+}
+
+export interface PlayerDisconnectedMsg {
+  type: "player_disconnected";
+  seat: number;
+}
+
 export type ServerMessage =
+  | GameStateMsg
   | RoundSubmittedMsg
   | RoundUndoneMsg
-  | GameEndedMsg;
+  | GameEndedMsg
+  | PlayerJoinedMsg
+  | PlayerDisconnectedMsg;

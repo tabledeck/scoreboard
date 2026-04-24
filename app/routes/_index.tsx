@@ -1,7 +1,8 @@
-import { useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router";
 import type { Route } from "./+types/_index";
 import BtnPrimary from "~/components/tabledeck/BtnPrimary";
+import BtnSecondary from "~/components/tabledeck/BtnSecondary";
 import ClipboardIcon from "~/components/icons/ClipboardIcon";
 import CloseIcon from "~/components/icons/CloseIcon";
 
@@ -20,14 +21,180 @@ export async function loader() {
   return {};
 }
 
+const PRESET_STORAGE_KEY = "tabledeck.scoreboard.presets.v1";
+const MAX_PRESETS = 8;
+const GAME_KEY = "scoreboard";
+
+interface ScoreboardPreset {
+  id: string;
+  name: string;
+  gameName: string;
+  lowerIsBetter: boolean;
+  playerNames: string[];
+  createdAt: number;
+}
+
+interface AccountSetupPreset {
+  id: string;
+  name: string;
+  settings: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function getAccountPresetEndpoint() {
+  if (typeof window === "undefined") return "";
+  const { hostname, protocol } = window.location;
+  if (hostname === "localhost" || hostname === "127.0.0.1") {
+    return "http://localhost:3000/api/account/setup-presets";
+  }
+  if (hostname.endsWith(".tabledeck.us") || hostname === "tabledeck.us") {
+    return "https://tabledeck.us/api/account/setup-presets";
+  }
+  return `${protocol}//${hostname}/api/account/setup-presets`;
+}
+
+function readPresets(): ScoreboardPreset[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(PRESET_STORAGE_KEY) ?? "[]",
+    ) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((preset): preset is ScoreboardPreset => {
+      const p = preset as Partial<ScoreboardPreset>;
+      return (
+        typeof p.id === "string" &&
+        typeof p.name === "string" &&
+        typeof p.gameName === "string" &&
+        typeof p.lowerIsBetter === "boolean" &&
+        Array.isArray(p.playerNames) &&
+        p.playerNames.every((name) => typeof name === "string") &&
+        typeof p.createdAt === "number"
+      );
+    });
+  } catch {
+    return [];
+  }
+}
+
+function writePresets(presets: ScoreboardPreset[]) {
+  window.localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(presets));
+}
+
+function isPresetSettings(value: unknown): value is {
+  gameName: string;
+  lowerIsBetter: boolean;
+  playerNames: string[];
+} {
+  if (!value || typeof value !== "object") return false;
+  const settings = value as Record<string, unknown>;
+  return (
+    typeof settings.gameName === "string" &&
+    typeof settings.lowerIsBetter === "boolean" &&
+    Array.isArray(settings.playerNames) &&
+    settings.playerNames.every((name) => typeof name === "string")
+  );
+}
+
+function fromAccountPreset(preset: AccountSetupPreset): ScoreboardPreset | null {
+  if (!isPresetSettings(preset.settings)) return null;
+  return {
+    id: preset.id,
+    name: preset.name,
+    gameName: preset.settings.gameName,
+    lowerIsBetter: preset.settings.lowerIsBetter,
+    playerNames: preset.settings.playerNames,
+    createdAt:
+      Date.parse(preset.updatedAt) ||
+      Date.parse(preset.createdAt) ||
+      Date.now(),
+  };
+}
+
+function mergePresets(
+  accountPresets: ScoreboardPreset[],
+  localPresets: ScoreboardPreset[],
+) {
+  const byName = new Map<string, ScoreboardPreset>();
+  for (const preset of [...localPresets].reverse()) byName.set(preset.name, preset);
+  for (const preset of [...accountPresets].reverse()) byName.set(preset.name, preset);
+  return [...byName.values()]
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, MAX_PRESETS);
+}
+
+async function loadAccountPresets(): Promise<ScoreboardPreset[]> {
+  const endpoint = getAccountPresetEndpoint();
+  if (!endpoint) return [];
+  const response = await fetch(`${endpoint}?gameKey=${GAME_KEY}`, {
+    credentials: "include",
+  });
+  if (!response.ok) return [];
+  const body = (await response.json()) as { presets?: AccountSetupPreset[] };
+  return (body.presets ?? [])
+    .map((preset) => fromAccountPreset(preset))
+    .filter((preset): preset is ScoreboardPreset => preset !== null);
+}
+
+async function saveAccountPreset(
+  preset: ScoreboardPreset,
+): Promise<ScoreboardPreset | null> {
+  const endpoint = getAccountPresetEndpoint();
+  if (!endpoint) return null;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      gameKey: GAME_KEY,
+      name: preset.name,
+      settings: {
+        gameName: preset.gameName,
+        lowerIsBetter: preset.lowerIsBetter,
+        playerNames: preset.playerNames,
+      },
+    }),
+  });
+  if (!response.ok) return null;
+  const body = (await response.json()) as { preset?: AccountSetupPreset };
+  return body.preset ? fromAccountPreset(body.preset) : null;
+}
+
+async function deleteAccountPreset(presetId: string) {
+  const endpoint = getAccountPresetEndpoint();
+  if (!endpoint) return;
+  await fetch(`${endpoint}?id=${encodeURIComponent(presetId)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+}
+
 export default function Index(_: Route.ComponentProps) {
   const navigate = useNavigate();
   const [creating, setCreating] = useState(false);
   const [gameName, setGameName] = useState("");
   const [lowerIsBetter, setLowerIsBetter] = useState(false);
   const [playerNames, setPlayerNames] = useState(["", ""]);
+  const [presets, setPresets] = useState<ScoreboardPreset[]>([]);
+  const [presetName, setPresetName] = useState("");
   const [error, setError] = useState("");
   const lastInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const localPresets = readPresets();
+    setPresets(localPresets);
+    loadAccountPresets()
+      .then((accountPresets) => {
+        if (accountPresets.length === 0) return;
+        const merged = mergePresets(accountPresets, readPresets());
+        writePresets(merged);
+        setPresets(merged);
+      })
+      .catch(() => {
+        // Local presets remain available when the account API is unreachable.
+      });
+  }, []);
 
   const addPlayer = () => {
     if (playerNames.length >= 12) return;
@@ -43,6 +210,53 @@ export default function Index(_: Route.ComponentProps) {
 
   const updatePlayer = (idx: number, val: string) => {
     setPlayerNames((prev) => prev.map((n, i) => (i === idx ? val : n)));
+  };
+
+  const savePreset = async () => {
+    const trimmedPlayers = playerNames.map((n) => n.trim()).filter(Boolean);
+    if (trimmedPlayers.length < 2) {
+      setError("Enter at least 2 player names before saving a setup.");
+      return;
+    }
+
+    const localPreset: ScoreboardPreset = {
+      id: crypto.randomUUID(),
+      name:
+        presetName.trim() ||
+        gameName.trim() ||
+        `${trimmedPlayers.length}-player scoreboard`,
+      gameName: gameName.trim(),
+      lowerIsBetter,
+      playerNames: trimmedPlayers,
+      createdAt: Date.now(),
+    };
+    const accountPreset = await saveAccountPreset(localPreset).catch(() => null);
+    const nextPreset = accountPreset ?? localPreset;
+
+    const nextPresets = [
+      nextPreset,
+      ...presets.filter((preset) => preset.name !== nextPreset.name),
+    ].slice(0, MAX_PRESETS);
+    writePresets(nextPresets);
+    setPresets(nextPresets);
+    setPresetName("");
+    setError("");
+  };
+
+  const applyPreset = (preset: ScoreboardPreset) => {
+    setGameName(preset.gameName);
+    setLowerIsBetter(preset.lowerIsBetter);
+    setPlayerNames(preset.playerNames.length >= 2 ? preset.playerNames : ["", ""]);
+    setError("");
+  };
+
+  const deletePreset = (presetId: string) => {
+    const nextPresets = presets.filter((preset) => preset.id !== presetId);
+    writePresets(nextPresets);
+    setPresets(nextPresets);
+    deleteAccountPreset(presetId).catch(() => {
+      // The local delete already happened; account sync will retry on the next save.
+    });
   };
 
   const createGame = async () => {
@@ -319,6 +533,111 @@ export default function Index(_: Route.ComponentProps) {
               </div>
             ))}
           </div>
+
+          {/* Saved setups */}
+          <label
+            style={{
+              fontFamily: "var(--serif)",
+              fontVariant: "small-caps",
+              letterSpacing: "0.18em",
+              fontSize: 11,
+              color: "var(--ink-soft)",
+              display: "block",
+              marginBottom: 8,
+              marginTop: 8,
+            }}
+          >
+            Saved Setups
+          </label>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <input
+              type="text"
+              value={presetName}
+              onChange={(e) => setPresetName(e.target.value)}
+              placeholder="Setup name"
+              maxLength={32}
+              className="td-input"
+              style={{ flex: 1 }}
+            />
+            <BtnSecondary
+              onClick={savePreset}
+              type="button"
+              style={{ flexShrink: 0, padding: "7px 12px" }}
+            >
+              Save
+            </BtnSecondary>
+          </div>
+
+          {presets.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
+              {presets.map((preset) => (
+                <div
+                  key={preset.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "8px 10px",
+                    borderRadius: 6,
+                    background: "rgba(26,22,18,0.05)",
+                    border: "1px solid rgba(26,22,18,0.1)",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => applyPreset(preset)}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      border: "none",
+                      background: "transparent",
+                      textAlign: "left",
+                      cursor: "pointer",
+                      padding: 0,
+                    }}
+                  >
+                    <span
+                      style={{
+                        display: "block",
+                        fontFamily: "var(--serif)",
+                        fontWeight: 600,
+                        fontStyle: "italic",
+                        fontSize: 14,
+                        color: "var(--ink)",
+                      }}
+                    >
+                      {preset.name}
+                    </span>
+                    <span
+                      style={{
+                        display: "block",
+                        fontFamily: "var(--sans)",
+                        fontSize: 11,
+                        color: "var(--ink-faint)",
+                      }}
+                    >
+                      {preset.playerNames.length} players · {preset.lowerIsBetter ? "Lower wins" : "Higher wins"}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deletePreset(preset.id)}
+                    aria-label={`Delete ${preset.name}`}
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      color: "var(--ink-faint)",
+                      cursor: "pointer",
+                      padding: 2,
+                      display: "flex",
+                    }}
+                  >
+                    <CloseIcon size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
 
           {playerNames.length < 12 && (
             <button

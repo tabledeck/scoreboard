@@ -36,7 +36,7 @@ export class ScoreboardRoomDO extends BaseGameRoomDO<
   }
 
   protected deserializeState(data: Record<string, unknown>): ScoreboardState {
-    const raw = data as ScoreboardState;
+    const raw = data as unknown as ScoreboardState;
     return {
       phase: raw.phase ?? "playing",
       players: raw.players ?? [],
