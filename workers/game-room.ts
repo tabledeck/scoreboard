@@ -1,7 +1,15 @@
+import { nanoid } from "nanoid";
 import { BaseGameRoomDO } from "@tabledeck/game-room/server";
 import type { ScoreboardState, ScoreboardSettings } from "../app/domain/types";
 import { ClientMessage } from "../app/domain/messages";
-import { submitRound, undoLastRound } from "../app/domain/logic";
+import {
+  addPlayer,
+  editRound,
+  normalizeScores,
+  submitRound,
+  undoLastRound,
+} from "../app/domain/logic";
+import { writeAddedPlayer, writeFinishedGame } from "./finish-record";
 
 export class ScoreboardRoomDO extends BaseGameRoomDO<
   ScoreboardState,
@@ -100,11 +108,16 @@ export class ScoreboardRoomDO extends BaseGameRoomDO<
 
     const msg = result.data;
 
+    if (this.gameState.phase === "finished" && msg.type !== "end_game") {
+      ws.send(JSON.stringify({ type: "error", message: "This game is already finished." }));
+      return;
+    }
+
     switch (msg.type) {
       case "submit_scores": {
-        const { scores } = msg;
-        if (scores.length !== this.gameState.players.length) {
-          ws.send(JSON.stringify({ type: "error", message: "Score count mismatch." }));
+        const scores = normalizeScores(msg.scores, this.gameState.players.length);
+        if (!scores) {
+          ws.send(JSON.stringify({ type: "error", message: "Enter a whole number for each player." }));
           return;
         }
         this.gameState = submitRound(this.gameState, scores);
@@ -115,6 +128,30 @@ export class ScoreboardRoomDO extends BaseGameRoomDO<
             round: scores,
             totals: this.gameState.totals,
             roundIndex: this.gameState.rounds.length - 1,
+          }),
+        );
+        break;
+      }
+
+      case "edit_round": {
+        const scores = normalizeScores(msg.scores, this.gameState.players.length);
+        if (!scores) {
+          ws.send(JSON.stringify({ type: "error", message: "Enter a whole number for each player." }));
+          return;
+        }
+        const next = editRound(this.gameState, msg.roundIndex, scores);
+        if (!next) {
+          ws.send(JSON.stringify({ type: "error", message: "That round can't be edited." }));
+          return;
+        }
+        this.gameState = next;
+        await this.persistState();
+        this.broadcast(
+          JSON.stringify({
+            type: "round_edited",
+            rounds: this.gameState.rounds,
+            totals: this.gameState.totals,
+            roundIndex: msg.roundIndex,
           }),
         );
         break;
@@ -137,8 +174,66 @@ export class ScoreboardRoomDO extends BaseGameRoomDO<
         break;
       }
 
+      case "add_player": {
+        const next = addPlayer(this.gameState, msg.name);
+        if (!next) {
+          ws.send(JSON.stringify({ type: "error", message: "That player can't be added." }));
+          return;
+        }
+        const added = next.players[next.players.length - 1];
+        if (!added || !this.gameId) {
+          ws.send(JSON.stringify({ type: "error", message: "That player can't be added." }));
+          return;
+        }
+        try {
+          await writeAddedPlayer(
+            this.env.D1_DATABASE,
+            this.gameId,
+            nanoid(12),
+            added.name,
+            added.seat,
+            next.players.length,
+          );
+        } catch (error) {
+          console.error(JSON.stringify({
+            event: "add_player_failed",
+            gameId: this.gameId,
+            message: error instanceof Error ? error.message : "unknown",
+          }));
+          ws.send(JSON.stringify({ type: "error", message: "Couldn't add that player. Try again." }));
+          return;
+        }
+        const settings = this.settings;
+        this.gameState = next;
+        this.settings = {
+          ...settings,
+          maxPlayers: next.players.length,
+          playerNames: next.players.map((player) => player?.name ?? ""),
+        };
+        await this.persistState();
+        this.broadcast(
+          JSON.stringify({
+            type: "player_added",
+            players: this.gameState.players,
+            rounds: this.gameState.rounds,
+            totals: this.gameState.totals,
+          }),
+        );
+        break;
+      }
+
       case "end_game": {
-        this.gameState = { ...this.gameState, phase: "finished" };
+        if (this.gameState.phase !== "finished") {
+          const saved = await this.saveFinishedGame();
+          if (!saved) {
+            ws.send(JSON.stringify({
+              type: "error",
+              message: "Couldn't save the final result. Try again.",
+            }));
+            return;
+          }
+          this.gameState = { ...this.gameState, phase: "finished" };
+        }
         await this.persistState();
         this.broadcast(
           JSON.stringify({
@@ -148,6 +243,32 @@ export class ScoreboardRoomDO extends BaseGameRoomDO<
         );
         break;
       }
+    }
+  }
+
+  /**
+   * Write status, finishedAt, and final scores before the board locks.
+   * A failed write leaves the game in play so the host can retry.
+   */
+  private async saveFinishedGame(): Promise<boolean> {
+    if (!this.gameState || !this.gameId) return false;
+    const seats = this.gameState.players
+      .filter((player) => player != null)
+      .map((player) => player.seat);
+    try {
+      return await writeFinishedGame(
+        this.env.D1_DATABASE,
+        this.gameId,
+        this.gameState.totals,
+        seats,
+      );
+    } catch (error) {
+      console.error(JSON.stringify({
+        event: "finish_game_failed",
+        gameId: this.gameId,
+        message: error instanceof Error ? error.message : "unknown",
+      }));
+      return false;
     }
   }
 
