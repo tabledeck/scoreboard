@@ -1,11 +1,13 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { redirect } from "react-router";
 import type { Route } from "./+types/game.$gameId";
 import { getPrisma } from "~/db.server";
 import { useGameWebSocket } from "@tabledeck/game-room/client";
 import { readGuestCookie } from "@tabledeck/game-room/server";
-import type { ScoreboardState, ScoreboardPlayer } from "~/domain/types";
+import type { ScoreboardPlayer, ScoreboardState } from "~/domain/types";
 import type { ServerMessage } from "~/domain/messages";
+import { repairFinishedRecord } from "~/domain/finishRecord";
+import { readScore, sanitizeScoreInput } from "~/domain/logic";
 
 import Ticket from "~/components/tabledeck/Ticket";
 import Ledger from "~/components/tabledeck/Ledger";
@@ -17,13 +19,13 @@ import LinkIcon from "~/components/icons/LinkIcon";
 import UndoIcon from "~/components/icons/UndoIcon";
 import FlagIcon from "~/components/icons/FlagIcon";
 import CloseIcon from "~/components/icons/CloseIcon";
+import Dialog from "~/components/scoreboard/Dialog";
+import ScoreSheet from "~/components/scoreboard/ScoreSheet";
 
 export function meta({ data }: Route.MetaArgs) {
-  const name = (data as any)?.gameName || "Scoreboard";
+  const name = data?.gameName || "Scoreboard";
   return [{ title: `${name} — Scoreboard` }];
 }
-
-// ── Loader ────────────────────────────────────────────────────────────────────
 
 export async function loader({ params, request, context }: Route.LoaderArgs) {
   const { gameId } = params;
@@ -33,15 +35,14 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     where: { id: gameId },
     include: { players: { orderBy: { seat: "asc" } } },
   });
-  if (!game) throw redirect("/");
+  if (!game) throw redirect("/?missing=1");
 
-  // Check for host cookie
   const identity = readGuestCookie(request, `sb_${gameId}`);
   const mySeat = identity?.seat ?? -1;
   const myName = identity?.name ?? "Spectator";
 
-  // Fetch initial state from Durable Object
-  const env = (context as any).cloudflare?.env as Env | undefined;
+  const cloudflare = (context as { cloudflare?: { env?: Env } }).cloudflare;
+  const env = cloudflare?.env;
   let initialState: ScoreboardState | null = null;
   if (env) {
     try {
@@ -53,7 +54,19 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
         initialState = body.state;
       }
     } catch {
-      // Non-fatal — WS connect will hydrate state
+      // The socket hydrates state if the room is briefly unreachable.
+    }
+  }
+
+  if (initialState?.phase === "finished") {
+    try {
+      await repairFinishedRecord(db, game, initialState.totals ?? []);
+    } catch (error) {
+      console.error(JSON.stringify({
+        event: "finish_record_repair_failed",
+        gameId,
+        message: error instanceof Error ? error.message : "unknown",
+      }));
     }
   }
 
@@ -71,7 +84,20 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   };
 }
 
-// ── Component ─────────────────────────────────────────────────────────────────
+type Notice = { id: number; text: string; tone: "ok" | "err" };
+type PendingKind = "scores" | "undo" | "finish" | "add";
+type ScoreDraft = { roundIndex: number | null; values: Record<number, string> };
+
+type Incoming =
+  | ServerMessage
+  | { type: "error"; message: string }
+  | { type: "pong" };
+
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
 
 export default function GameRoom({ loaderData }: Route.ComponentProps) {
   const { gameId, gameName, lowerIsBetter, mySeat, myName, initialState, shareUrl } =
@@ -79,7 +105,6 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
 
   const isHost = mySeat === 0;
 
-  // ── State ──────────────────────────────────────────────────────────────────
   const [phase, setPhase] = useState<"playing" | "finished">(
     initialState?.phase ?? "playing",
   );
@@ -88,725 +113,747 @@ export default function GameRoom({ loaderData }: Route.ComponentProps) {
   );
   const [rounds, setRounds] = useState<number[][]>(initialState?.rounds ?? []);
   const [totals, setTotals] = useState<number[]>(initialState?.totals ?? []);
+  const [live, setLive] = useState(false);
 
   const [scoringOpen, setScoringOpen] = useState(false);
+  const [editingRound, setEditingRound] = useState<number | null>(null);
   const [scoreInputs, setScoreInputs] = useState<Record<number, string>>({});
   const [endConfirmOpen, setEndConfirmOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [undoOpen, setUndoOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const [addName, setAddName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [replayBusy, setReplayBusy] = useState(false);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [canNativeShare, setCanNativeShare] = useState(false);
+  const [link, setLink] = useState(shareUrl);
 
-  // ── WebSocket ──────────────────────────────────────────────────────────────
+  const pendingRef = useRef<PendingKind | null>(null);
+  const draftRef = useRef<ScoreDraft | null>(null);
+  const ackTimer = useRef<number | null>(null);
+  const noticeTimer = useRef<number | null>(null);
+
+  const flash = useCallback((text: string, tone: Notice["tone"] = "ok") => {
+    const id = Date.now();
+    setNotice({ id, text, tone });
+    if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
+    noticeTimer.current = window.setTimeout(() => {
+      setNotice((current) => (current?.id === id ? null : current));
+    }, 3200);
+  }, []);
+
+  const settle = useCallback(() => {
+    pendingRef.current = null;
+    if (ackTimer.current) window.clearTimeout(ackTimer.current);
+    ackTimer.current = null;
+    setSaving(false);
+  }, []);
+
+  const arm = useCallback((kind: PendingKind) => {
+    pendingRef.current = kind;
+    if (ackTimer.current) window.clearTimeout(ackTimer.current);
+    ackTimer.current = window.setTimeout(() => {
+      if (pendingRef.current !== kind) return;
+      pendingRef.current = null;
+      setSaving(false);
+      if (kind === "scores" && draftRef.current) {
+        setScoreInputs(draftRef.current.values);
+        setEditingRound(draftRef.current.roundIndex);
+        setScoringOpen(true);
+      }
+      if (kind === "finish") setEndConfirmOpen(true);
+      if (kind === "undo") setUndoOpen(true);
+      flash("That didn't save. Check your connection and try again.", "err");
+    }, 4500);
+  }, [flash]);
+
+  useEffect(() => {
+    setCanNativeShare(typeof navigator.share === "function");
+    setLink(`${window.location.origin}/game/${gameId}`);
+    return () => {
+      if (ackTimer.current) window.clearTimeout(ackTimer.current);
+      if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
+    };
+  }, []);
+
+  const onMessage = useCallback((rawMsg: unknown) => {
+    const msg = rawMsg as Incoming;
+    setLive(true);
+
+    switch (msg.type) {
+      case "game_state": {
+        const state = msg.state;
+        if (state) {
+          setPhase(state.phase);
+          setPlayers(state.players ?? []);
+          setRounds(state.rounds ?? []);
+          setTotals(state.totals ?? []);
+        }
+        break;
+      }
+      case "round_submitted": {
+        setRounds((prev) => [...prev, msg.round]);
+        setTotals(msg.totals);
+        if (pendingRef.current === "scores") {
+          draftRef.current = null;
+          settle();
+        }
+        break;
+      }
+      case "round_edited": {
+        setRounds(msg.rounds);
+        setTotals(msg.totals);
+        if (pendingRef.current === "scores") {
+          draftRef.current = null;
+          settle();
+        }
+        break;
+      }
+      case "round_undone": {
+        setRounds((prev) => prev.slice(0, msg.roundCount));
+        setTotals(msg.totals);
+        if (pendingRef.current === "undo") settle();
+        break;
+      }
+      case "game_ended": {
+        setTotals(msg.totals);
+        setPhase("finished");
+        setScoringOpen(false);
+        if (pendingRef.current === "finish") settle();
+        break;
+      }
+      case "player_added": {
+        setPlayers(msg.players);
+        setRounds(msg.rounds);
+        setTotals(msg.totals);
+        if (pendingRef.current === "add") {
+          settle();
+          setAddOpen(false);
+          setAddName("");
+        }
+        break;
+      }
+      case "player_joined": {
+        const { seat, name } = msg;
+        setPlayers((prev) => {
+          const next = [...prev];
+          if (next[seat]) next[seat] = { ...next[seat]!, connected: true, name };
+          return next;
+        });
+        break;
+      }
+      case "player_disconnected": {
+        const { seat } = msg;
+        setPlayers((prev) => {
+          const next = [...prev];
+          if (next[seat]) next[seat] = { ...next[seat]!, connected: false };
+          return next;
+        });
+        break;
+      }
+      case "error": {
+        const kind = pendingRef.current;
+        settle();
+        if (kind === "scores" && draftRef.current) {
+          setScoreInputs(draftRef.current.values);
+          setEditingRound(draftRef.current.roundIndex);
+          setScoringOpen(true);
+        }
+        if (kind === "finish") setEndConfirmOpen(true);
+        if (kind === "undo") setUndoOpen(true);
+        flash(msg.message || "Something went wrong.", "err");
+        break;
+      }
+      default:
+        break;
+    }
+  }, [flash, settle]);
+
   const { send } = useGameWebSocket({
     gameId,
     seat: mySeat,
     name: myName,
-    onMessage: useCallback((rawMsg: unknown) => {
-      const msg = rawMsg as { type: string } & ServerMessage;
-
-      switch (msg.type) {
-        case "game_state": {
-          const s = (msg as any).state as ScoreboardState;
-          if (s) {
-            setPhase(s.phase);
-            setPlayers(s.players ?? []);
-            setRounds(s.rounds ?? []);
-            setTotals(s.totals ?? []);
-          }
-          break;
-        }
-        case "round_submitted": {
-          setRounds((prev) => [...prev, msg.round]);
-          setTotals(msg.totals);
-          break;
-        }
-        case "round_undone": {
-          setRounds((prev) => prev.slice(0, msg.roundCount));
-          setTotals(msg.totals);
-          break;
-        }
-        case "game_ended": {
-          setTotals(msg.totals);
-          setPhase("finished");
-          break;
-        }
-        case "player_joined": {
-          const { seat, name } = msg as any;
-          setPlayers((prev) => {
-            const next = [...prev];
-            if (next[seat]) next[seat] = { ...next[seat]!, connected: true, name };
-            return next;
-          });
-          break;
-        }
-        case "player_disconnected": {
-          const { seat } = msg as any;
-          setPlayers((prev) => {
-            const next = [...prev];
-            if (next[seat]) next[seat] = { ...next[seat]!, connected: false };
-            return next;
-          });
-          break;
-        }
-      }
-    }, []),
+    onMessage,
   });
 
-  // ── Derived: ranked leaderboard ────────────────────────────────────────────
-  const rankedPlayers = players
-    .filter((p): p is ScoreboardPlayer => p != null)
-    .map((p) => ({ ...p, total: totals[p.seat] ?? 0 }))
-    .sort((a, b) =>
-      lowerIsBetter ? a.total - b.total : b.total - a.total,
-    );
+  const seated = players.filter((player): player is ScoreboardPlayer => player != null);
+  const ranked = seated
+    .map((player) => ({ ...player, total: totals[player.seat] ?? 0 }))
+    .sort((a, b) => (lowerIsBetter ? a.total - b.total : b.total - a.total));
 
-  // ── Score submission ────────────────────────────────────────────────────────
-  const openScoring = () => {
+  let previousTotal: number | null = null;
+  let previousRank = 0;
+  const standing = ranked.map((player, index) => {
+    const rank = previousTotal === player.total ? previousRank : index + 1;
+    previousTotal = player.total;
+    previousRank = rank;
+    return { ...player, rank };
+  });
+  const leaders = rounds.length > 0 ? standing.filter((player) => player.rank === 1) : [];
+  const leaderSeats = new Set(leaders.map((player) => player.seat));
+
+  const medalClass = (rank: number) => {
+    if (rank === 1) return "gold";
+    if (rank === 2) return "silver";
+    if (rank === 3) return "bronze";
+    if (rank === 4) return "copper";
+    return "plain";
+  };
+
+  const openScoring = (roundIndex: number | null) => {
+    if (!isHost || phase !== "playing" || saving) return;
     const defaults: Record<number, string> = {};
-    players.forEach((p) => {
-      if (p) defaults[p.seat] = "0";
-    });
+    for (const player of seated) {
+      defaults[player.seat] =
+        roundIndex == null ? "" : String(rounds[roundIndex]?.[player.seat] ?? 0);
+    }
     setScoreInputs(defaults);
+    setEditingRound(roundIndex);
     setScoringOpen(true);
   };
 
+  const changeScore = (seat: number, value: string) => {
+    setScoreInputs((prev) => ({ ...prev, [seat]: sanitizeScoreInput(value) }));
+  };
+
+  const adjustScore = (seat: number, delta: number) => {
+    setScoreInputs((prev) => {
+      const next = Math.max(-9999, Math.min(9999, readScore(prev[seat]) + delta));
+      return { ...prev, [seat]: String(next) };
+    });
+  };
+
   const submitScores = () => {
-    const scores = players.map((p) =>
-      p ? parseInt(scoreInputs[p.seat] ?? "0", 10) || 0 : 0,
-    );
-    send({ type: "submit_scores", scores });
+    if (saving) return;
+    const scores = players.map((player) => readScore(player ? scoreInputs[player.seat] : "0"));
+    draftRef.current = { roundIndex: editingRound, values: scoreInputs };
     setScoringOpen(false);
-    setScoreInputs({});
+    setSaving(true);
+    if (editingRound == null) {
+      send({ type: "submit_scores", scores });
+    } else {
+      send({ type: "edit_round", roundIndex: editingRound, scores });
+    }
+    arm("scores");
   };
 
   const undoRound = () => {
+    if (saving || rounds.length === 0) return;
+    setUndoOpen(false);
+    setSaving(true);
     send({ type: "undo_round" });
+    arm("undo");
   };
 
   const endGame = () => {
-    send({ type: "end_game" });
+    if (saving) return;
     setEndConfirmOpen(false);
+    setSaving(true);
+    send({ type: "end_game" });
+    arm("finish");
+  };
+
+  const submitAdd = () => {
+    const name = addName.trim();
+    if (!name) {
+      flash("Enter a name.", "err");
+      return;
+    }
+    if (seated.some((player) => player.name === name)) {
+      flash("That name is already seated.", "err");
+      return;
+    }
+    setSaving(true);
+    send({ type: "add_player", name });
+    arm("add");
   };
 
   const copyLink = async () => {
     try {
-      await navigator.clipboard.writeText(shareUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      await navigator.clipboard.writeText(link);
+      flash("Link copied");
     } catch {
-      // Fallback for non-HTTPS
+      setShareOpen(true);
+      flash("Select the link below and copy it.", "err");
     }
   };
 
-  // ── Medallion class ────────────────────────────────────────────────────────
-  const medalClass = (rank: number) => {
-    if (rank === 0) return "gold";
-    if (rank === 1) return "silver";
-    if (rank === 2) return "bronze";
-    if (rank === 3) return "copper";
-    return "plain";
+  const shareNative = async () => {
+    if (!navigator.share) {
+      await copyLink();
+      return;
+    }
+    try {
+      await navigator.share({
+        title: gameName || "Scoreboard",
+        text: "Follow along on this scoreboard.",
+        url: link,
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      await copyLink();
+    }
   };
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  const playAgain = async () => {
+    const playerNames = seated
+      .slice()
+      .sort((a, b) => a.seat - b.seat)
+      .map((player) => player.name);
+    setReplayBusy(true);
+    try {
+      const res = await fetch("/api/game", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gameName, playerNames, lowerIsBetter }),
+      });
+      if (!res.ok) {
+        flash("Couldn't start the next game.", "err");
+        setReplayBusy(false);
+        return;
+      }
+      const body = (await res.json()) as { gameId: string };
+      window.location.assign(`/game/${body.gameId}`);
+    } catch {
+      flash("Couldn't start the next game.", "err");
+      setReplayBusy(false);
+    }
+  };
+
+  const directionLabel = lowerIsBetter ? "Lower wins" : "Higher wins";
+  const roundLabel = rounds.length === 0 ? "No rounds yet" : `Round ${rounds.length}`;
+  const sheetPlayers = seated.map((player) => ({ seat: player.seat, name: player.name }));
+
   return (
-    <div className="td-surface" style={{ minHeight: "100vh" }}>
-
-      {/* ── Header bar ──────────────────────────────────────────────────── */}
-      <div className="header-bar">
-        <div
-          style={{
-            maxWidth: 960,
-            margin: "0 auto",
-            display: "flex",
-            flexWrap: "wrap",
-            alignItems: "center",
-            gap: 12,
-          }}
-        >
-          {/* Back link */}
-          <a
-            href="/"
-            style={{
-              fontFamily: "var(--serif)",
-              fontVariant: "small-caps",
-              fontSize: 11,
-              letterSpacing: "0.2em",
-              color: "var(--gold-hi)",
-              textDecoration: "none",
-              opacity: 0.75,
-              marginRight: 4,
-            }}
-          >
-            &larr; New
-          </a>
-
-          {/* Game name plaque */}
-          <div
-            style={{
-              fontFamily: "var(--serif)",
-              fontWeight: 600,
-              fontStyle: "italic",
-              fontSize: 26,
-              color: "var(--gold-hi)",
-              letterSpacing: "0.01em",
-              textShadow: "0 1px 0 rgba(0,0,0,0.5)",
-              flexShrink: 0,
-            }}
-          >
-            {gameName || "Scoreboard"}
-          </div>
-
-          {/* Ticket chips */}
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginLeft: 4 }}>
-            <Ticket
-              label="Round"
-              value={rounds.length === 0 ? "—" : String(rounds.length)}
-            />
-            <Ticket
-              label="Status"
-              value={phase === "finished" ? "Final" : "Playing"}
-              gold={phase === "finished"}
-            />
-            <Ticket
-              label="Direction"
-              value={lowerIsBetter ? "Lower Wins" : "Higher Wins"}
-            />
-          </div>
-
-          {/* Action group */}
-          <div style={{ display: "flex", gap: 8, marginLeft: "auto", flexWrap: "wrap" }}>
-            <button
-              onClick={copyLink}
-              className="btn-secondary"
-              style={{ padding: "7px 14px", fontSize: 12, marginBottom: 0, gap: 6 }}
-              type="button"
-            >
-              <LinkIcon size={13} />
-              Share Link
+    <div className={`td-surface game-page${phase === "finished" ? " is-finished" : ""}`}>
+      <header className="header-bar game-header">
+        <div className="game-header-top">
+          <a className="link-quiet on-dark" href="/">New board</a>
+          <h1 className="game-title">{gameName || "Scoreboard"}</h1>
+          <span className={`live-pill${live ? " is-live" : ""}`}>
+            <span className="live-dot" aria-hidden="true" />
+            {live ? "Live" : "Connecting"}
+          </span>
+          <div className="header-actions">
+            <button type="button" className="btn-secondary header-btn" onClick={() => setShareOpen(true)}>
+              <LinkIcon size={15} />
+              Share
             </button>
+            {isHost && phase === "playing" && rounds.length > 0 && (
+              <button type="button" className="btn-secondary header-btn" onClick={() => setUndoOpen(true)} disabled={saving}>
+                <UndoIcon size={15} />
+                Undo
+              </button>
+            )}
             {isHost && phase === "playing" && (
+              <button type="button" className="btn-secondary header-btn" onClick={() => setEndConfirmOpen(true)} disabled={saving}>
+                <FlagIcon size={15} />
+                Finish
+              </button>
+            )}
+            {isHost && phase === "playing" && (
+              <button type="button" className="btn-primary header-btn" onClick={() => openScoring(null)} disabled={saving}>
+                <PencilIcon size={15} />
+                {saving ? "Saving…" : "Score round"}
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="game-header-sub">
+          <p className="game-meta meta-compact">
+            <span>{roundLabel}</span>
+            <span aria-hidden="true">·</span>
+            <span>{directionLabel}</span>
+            <span aria-hidden="true">·</span>
+            <span>{phase === "finished" ? "Final" : "In play"}</span>
+          </p>
+          <div className="meta-tickets">
+            <Ticket label="Round" value={rounds.length === 0 ? "—" : String(rounds.length)} />
+            <Ticket label="Status" value={phase === "finished" ? "Final" : "In play"} gold={phase === "finished"} />
+            <Ticket label="Direction" value={directionLabel} />
+          </div>
+          <p className="role-line">
+            {phase === "finished"
+              ? "Final scores are locked in."
+              : isHost
+                ? "You're keeping score on this phone. Everyone else can watch."
+                : "Watching live. Scores are entered on the phone that started this board."}
+            {isHost && phase === "playing" && seated.length < 12 && (
               <>
-                {rounds.length > 0 && (
-                  <button
-                    onClick={undoRound}
-                    className="btn-secondary"
-                    style={{ padding: "7px 14px", fontSize: 12, marginBottom: 0, gap: 6 }}
-                    title="Undo last round"
-                    type="button"
-                  >
-                    <UndoIcon size={13} />
-                    Undo
-                  </button>
-                )}
-                <button
-                  onClick={() => setEndConfirmOpen(true)}
-                  className="btn-ghost"
-                  style={{ padding: "7px 14px", fontSize: 12, color: "rgba(246,239,224,0.55)", gap: 6 }}
-                  type="button"
-                >
-                  <FlagIcon size={13} />
-                  End Game
+                {" "}
+                <button type="button" className="link-quiet on-dark inline" onClick={() => setAddOpen(true)}>
+                  Add player
                 </button>
               </>
             )}
-          </div>
+          </p>
         </div>
-      </div>
+      </header>
 
-      {/* ── Leaderboard ──────────────────────────────────────────────────── */}
-      <div
-        style={{
-          maxWidth: 960,
-          margin: "0 auto",
-          padding: "28px 16px",
-          paddingBottom: phase === "finished" ? 100 : 120,
-        }}
-      >
+      <main className="game-main">
+        {isHost && phase === "playing" && rounds.length === 0 && (
+          <section className="share-callout" aria-label="Share this scoreboard">
+            <div>
+              <p className="callout-kicker">Pass this around the table</p>
+              <p className="share-code">{gameId}</p>
+              <p className="callout-copy">
+                Anyone with the link sees scores as you enter them. Only this phone can change them.
+              </p>
+            </div>
+            <div className="callout-actions">
+              <button type="button" className="btn-primary" onClick={copyLink}>
+                <LinkIcon size={15} />
+                Copy link
+              </button>
+              {canNativeShare && (
+                <button type="button" className="btn-secondary" onClick={shareNative}>
+                  Share…
+                </button>
+              )}
+            </div>
+          </section>
+        )}
+
         <Ledger>
-          {/* Scroll curl ornament */}
-          <div className="scroll-curl">~ ~ ~</div>
+          <div className="scroll-curl" aria-hidden="true">~ ~ ~</div>
+          {seated.length === 0 ? (
+            <div className="empty-state">Connecting to the table…</div>
+          ) : (
+            <>
+              {rounds.length === 0 && !isHost && (
+                <p className="board-hint">Waiting for the first round.</p>
+              )}
 
-          {/* Table wrapper for overflow on narrow screens */}
-          <div style={{ overflowX: "auto", position: "relative", zIndex: 1, padding: "0 4px 4px" }}>
-            <table
-              style={{
-                width: "100%",
-                borderCollapse: "collapse",
-                tableLayout: "auto",
-              }}
-            >
-              <thead>
-                <tr>
-                  <th className="ledger-th" style={{ textAlign: "left", width: 48, paddingLeft: 16 }}>#</th>
-                  <th className="ledger-th" style={{ textAlign: "left" }}>Player</th>
-                  <th className="ledger-th" style={{ textAlign: "right", paddingRight: 16, width: 80 }}>Total</th>
-                  {rounds.map((_, i) => (
-                    <th
-                      key={i}
-                      className="ledger-th"
-                      style={{ textAlign: "right", width: 52, paddingRight: 8 }}
-                    >
-                      R{i + 1}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rankedPlayers.map((player, rank) => {
-                  const isFirst = rank === 0 && rounds.length > 0;
+              <div className="board-cards">
+                {standing.map((player) => {
+                  const leading = leaderSeats.has(player.seat);
                   return (
-                    <tr
+                    <article
                       key={player.seat}
-                      className={`ledger-row${isFirst ? " leader" : ""}`}
+                      className={`player-card${leading ? " is-leader" : ""}`}
                     >
-                      {/* Rank cell */}
-                      <td
-                        style={{
-                          paddingLeft: 16,
-                          paddingRight: 8,
-                          width: 48,
-                          verticalAlign: "middle",
-                        }}
-                      >
-                        <div
-                          className={`rank-medallion ${medalClass(rank)}`}
-                          style={{ margin: "0 auto" }}
-                        >
-                          {isFirst ? (
-                            <CrownIcon
-                              size={16}
-                            />
-                          ) : (
-                            <span>{rank + 1}</span>
-                          )}
-                        </div>
-                      </td>
-
-                      {/* Player name */}
-                      <td style={{ paddingRight: 12, verticalAlign: "middle" }}>
-                        <span
-                          style={{
-                            fontFamily: "var(--sans)",
-                            fontWeight: 600,
-                            fontSize: 15,
-                            color: "var(--ink)",
-                          }}
-                        >
-                          {player.name}
-                        </span>
-                        {player.connected && (
-                          <span
-                            className="status-dot"
-                            title="Online"
-                            style={{ marginLeft: 7, verticalAlign: "middle" }}
-                          />
+                      <div className={`rank-medallion ${medalClass(player.rank)}`} aria-hidden="true">
+                        {leading && leaders.length === 1 ? (
+                          <CrownIcon size={16} color="#3a2416" />
+                        ) : (
+                          <span>{player.rank}</span>
                         )}
-                      </td>
-
-                      {/* Total */}
-                      <td
-                        style={{
-                          paddingRight: 16,
-                          textAlign: "right",
-                          verticalAlign: "middle",
-                          width: 80,
-                        }}
-                      >
-                        <span
-                          style={{
-                            fontFamily: "var(--mono)",
-                            fontWeight: 700,
-                            fontSize: 18,
-                            color: "var(--ink)",
-                            fontVariantNumeric: "tabular-nums",
-                          }}
-                        >
-                          {player.total}
+                      </div>
+                      <div className="player-card-id">
+                        <span className="player-name">
+                          {player.name}
+                          {leading && <span className="sr-only">, leading</span>}
                         </span>
-                      </td>
-
-                      {/* Round cells */}
-                      {rounds.map((round, i) => (
-                        <td
-                          key={i}
-                          style={{
-                            textAlign: "right",
-                            paddingRight: 8,
-                            width: 52,
-                            verticalAlign: "middle",
-                          }}
-                        >
-                          <span
-                            style={{
-                              fontFamily: "var(--mono)",
-                              fontSize: 13,
-                              color: "var(--ink-faint)",
-                              fontVariantNumeric: "tabular-nums",
-                            }}
-                          >
-                            {round[player.seat] ?? 0}
-                          </span>
-                        </td>
-                      ))}
-                    </tr>
+                        {leading && (
+                          <span className="leader-tag">{leaders.length > 1 ? "Tied" : "Leading"}</span>
+                        )}
+                      </div>
+                      <div className="big-total">{player.total}</div>
+                      {rounds.length > 0 && (
+                        <div className="round-strip" aria-label={`${player.name} round scores`}>
+                          {rounds.map((round, index) => {
+                            const score = round[player.seat] ?? 0;
+                            const latest = index === rounds.length - 1;
+                            const label = `Round ${index + 1}, ${score}${isHost && phase === "playing" ? ". Edit round" : ""}`;
+                            const body = (
+                              <>
+                                <span>R{index + 1}</span>
+                                <strong>{score}</strong>
+                              </>
+                            );
+                            return isHost && phase === "playing" ? (
+                              <button
+                                key={index}
+                                type="button"
+                                className={`round-pip${latest ? " is-latest" : ""}`}
+                                onClick={() => openScoring(index)}
+                                aria-label={label}
+                              >
+                                {body}
+                              </button>
+                            ) : (
+                              <div key={index} className={`round-pip${latest ? " is-latest" : ""}`}>
+                                {body}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </article>
                   );
                 })}
-              </tbody>
-            </table>
-
-            {rankedPlayers.length === 0 && (
-              <div className="empty-state">
-                Loading players&hellip;
               </div>
-            )}
-          </div>
-        </Ledger>
-      </div>
 
-      {/* ── Finished banner ──────────────────────────────────────────────── */}
+              <div
+                className="board-scroll"
+                tabIndex={0}
+                aria-label="Score table. Scroll sideways for every round."
+              >
+                <table
+                  className="score-table"
+                  style={{ minWidth: 300 + rounds.length * 64 }}
+                >
+                  <caption className="sr-only">
+                    {gameName || "Scoreboard"}. {lowerIsBetter ? "Lowest total wins." : "Highest total wins."}
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th className="ledger-th is-sticky col-rank" scope="col">#</th>
+                      <th className="ledger-th is-sticky col-name" scope="col">Player</th>
+                      <th className="ledger-th is-sticky col-total" scope="col">Total</th>
+                      {rounds.map((_, index) => (
+                        <th
+                          key={index}
+                          className={`ledger-th${index === rounds.length - 1 ? " is-latest" : ""}`}
+                          scope="col"
+                        >
+                          {isHost && phase === "playing" ? (
+                            <button
+                              type="button"
+                              className="round-edit"
+                              onClick={() => openScoring(index)}
+                            >
+                              R{index + 1}
+                            </button>
+                          ) : (
+                            `R${index + 1}`
+                          )}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {standing.map((player) => {
+                      const leading = leaderSeats.has(player.seat);
+                      return (
+                        <tr
+                          key={player.seat}
+                          className={`ledger-row${leading ? " leader" : ""}`}
+                        >
+                          <td className="is-sticky col-rank">
+                            <div className={`rank-medallion ${medalClass(player.rank)}`}>
+                              {leading && leaders.length === 1 ? (
+                                <CrownIcon size={16} color="#3a2416" />
+                              ) : (
+                                <span>{player.rank}</span>
+                              )}
+                            </div>
+                            <span className="sr-only">
+                              {leading ? "Leading, " : `Rank ${player.rank}, `}
+                            </span>
+                          </td>
+                          <td className="is-sticky col-name">
+                            <span className="player-name">{player.name}</span>
+                          </td>
+                          <td className="is-sticky col-total">
+                            <span className="total-figure">{player.total}</span>
+                          </td>
+                          {rounds.map((round, index) => (
+                            <td
+                              key={index}
+                              className={index === rounds.length - 1 ? "is-latest" : undefined}
+                            >
+                              <span className="round-figure">{round[player.seat] ?? 0}</span>
+                            </td>
+                          ))}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </Ledger>
+      </main>
+
+      {phase === "playing" && (
+        <div className="action-dock">
+          {isHost ? (
+            <>
+              <div className="dock-row">
+                <button type="button" className="btn-secondary" onClick={() => setShareOpen(true)}>
+                  <LinkIcon size={15} />
+                  Share
+                </button>
+                {rounds.length > 0 && (
+                  <button type="button" className="btn-secondary" onClick={() => setUndoOpen(true)} disabled={saving}>
+                    <UndoIcon size={15} />
+                    Undo
+                  </button>
+                )}
+                <button type="button" className="btn-secondary" onClick={() => setEndConfirmOpen(true)} disabled={saving}>
+                  <FlagIcon size={15} />
+                  Finish
+                </button>
+              </div>
+              <button type="button" className="btn-primary" onClick={() => openScoring(null)} disabled={saving}>
+                <PencilIcon size={16} />
+                {saving ? "Saving…" : "Score round"}
+              </button>
+            </>
+          ) : (
+            <button type="button" className="btn-secondary" onClick={() => setShareOpen(true)}>
+              <LinkIcon size={15} />
+              Share link
+            </button>
+          )}
+        </div>
+      )}
+
       {phase === "finished" && (
         <div className="finished-banner">
-          <div
-            style={{
-              maxWidth: 960,
-              margin: "0 auto",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 16,
-            }}
-          >
-            <div>
-              <div
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 8,
-                  marginBottom: 4,
-                }}
-              >
-                {/* Inline wax-seal "FINAL" badge */}
-                <span
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    width: 48,
-                    height: 48,
-                    borderRadius: "50%",
-                    background:
-                      "radial-gradient(circle at 40% 40%, #a23138 0%, #6b1a21 58%, #4b1015 100%)",
-                    boxShadow:
-                      "inset 0 2px 2px rgba(255,255,255,0.25),inset 0 -3px 4px rgba(0,0,0,0.4),0 3px 8px rgba(0,0,0,0.5)",
-                    transform: "rotate(-8deg)",
-                    flexShrink: 0,
-                  }}
-                >
-                  <span
-                    style={{
-                      fontFamily: "var(--serif)",
-                      fontVariant: "small-caps",
-                      fontWeight: 700,
-                      fontSize: 9,
-                      letterSpacing: "0.18em",
-                      color: "rgba(246,239,224,0.88)",
-                    }}
-                  >
-                    Final
-                  </span>
-                </span>
-                <span
-                  style={{
-                    fontFamily: "var(--serif)",
-                    fontWeight: 600,
-                    fontVariant: "small-caps",
-                    fontSize: 16,
-                    letterSpacing: "0.14em",
-                    color: "var(--walnut)",
-                  }}
-                >
-                  Game Over
-                </span>
+          <div className="finished-inner">
+            <div className="finished-copy">
+              <div className="finished-title">
+                <span className="wax-seal" aria-hidden="true">Final</span>
+                <span>Game over</span>
               </div>
-              {rankedPlayers[0] && (
-                <p
-                  style={{
-                    fontFamily: "var(--sans)",
-                    fontSize: 14,
-                    color: "var(--ink-soft)",
-                    margin: 0,
-                  }}
-                >
-                  Winner:{" "}
-                  <span
-                    style={{
-                      fontFamily: "var(--serif)",
-                      fontVariant: "small-caps",
-                      fontWeight: 600,
-                      color: "var(--gold-lo)",
-                      letterSpacing: "0.08em",
-                    }}
-                  >
-                    {rankedPlayers[0].name}
-                  </span>
+              {leaders.length > 0 && (
+                <p>
+                  {leaders.length > 1 ? "Tie: " : "Winner: "}
+                  <span className="winner-name">{joinNames(leaders.map((player) => player.name))}</span>
                   {" "}
-                  <span
-                    style={{
-                      fontFamily: "var(--mono)",
-                      fontSize: 15,
-                      fontWeight: 700,
-                      color: "var(--ink)",
-                      fontVariantNumeric: "tabular-nums",
-                    }}
-                  >
-                    {rankedPlayers[0].total}
-                  </span>{" "}
-                  <span style={{ color: "var(--ink-faint)" }}>pts</span>
+                  <span className="winner-score">{leaders[0].total}</span>
+                  <span className="winner-unit"> pts</span>
                 </p>
               )}
             </div>
-            <a href="/" className="btn-primary" style={{ flexShrink: 0, textDecoration: "none" }}>
-              New Game
-            </a>
-          </div>
-        </div>
-      )}
-
-      {/* ── Score round FAB — host only ───────────────────────────────────── */}
-      {isHost && phase === "playing" && (
-        <div style={{ position: "fixed", bottom: 24, right: 24, zIndex: 30 }}>
-          <button
-            onClick={openScoring}
-            className="score-fab"
-            type="button"
-          >
-            <PencilIcon size={16} />
-            Score Round
-          </button>
-        </div>
-      )}
-
-      {/* ── Copied toast ──────────────────────────────────────────────────── */}
-      {copied && (
-        <div className="toast-stamp">
-          Link Copied
-        </div>
-      )}
-
-      {/* ── Score entry modal ────────────────────────────────────────────── */}
-      {scoringOpen && (
-        <ScoreModal
-          players={players.filter((p): p is ScoreboardPlayer => p != null)}
-          scoreInputs={scoreInputs}
-          onChange={(seat, val) =>
-            setScoreInputs((prev) => ({ ...prev, [seat]: val }))
-          }
-          onSubmit={submitScores}
-          onClose={() => setScoringOpen(false)}
-          roundNumber={rounds.length + 1}
-        />
-      )}
-
-      {/* ── End game confirm ─────────────────────────────────────────────── */}
-      {endConfirmOpen && (
-        <div className="modal-scroll-overlay">
-          <div className="modal-scroll">
-            <div className="modal-inner">
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "flex-start",
-                  justifyContent: "space-between",
-                  marginBottom: 12,
-                }}
-              >
-                <h3>End Game?</h3>
-                <button
-                  onClick={() => setEndConfirmOpen(false)}
-                  style={{
-                    background: "transparent",
-                    border: "none",
-                    cursor: "pointer",
-                    color: "var(--ink-faint)",
-                    padding: 2,
-                    marginTop: 2,
-                  }}
-                  aria-label="Cancel"
-                >
-                  <CloseIcon size={16} />
+            <div className="finished-actions">
+              {isHost && (
+                <button type="button" className="btn-primary" onClick={playAgain} disabled={replayBusy}>
+                  {replayBusy ? "Starting…" : "Play again"}
                 </button>
-              </div>
-              <p>
-                This will finalize scores and show the final leaderboard to
-                everyone. This cannot be undone.
-              </p>
-              <div style={{ display: "flex", gap: 10 }}>
-                <BtnSecondary
-                  onClick={() => setEndConfirmOpen(false)}
-                  style={{ flex: 1, marginBottom: 0 }}
-                  type="button"
-                >
-                  Cancel
-                </BtnSecondary>
-                <button
-                  onClick={endGame}
-                  className="btn-destructive"
-                  style={{ flex: 1 }}
-                  type="button"
-                >
-                  End Game
-                </button>
-              </div>
+              )}
+              <a className="btn-secondary" href="/">New setup</a>
             </div>
           </div>
         </div>
       )}
-    </div>
-  );
-}
 
-// ── Score Modal ───────────────────────────────────────────────────────────────
+      {notice && (
+        <div className={`toast-stamp${notice.tone === "err" ? " is-err" : ""}`} role="status">
+          {notice.text}
+        </div>
+      )}
 
-function ScoreModal({
-  players,
-  scoreInputs,
-  onChange,
-  onSubmit,
-  onClose,
-  roundNumber,
-}: {
-  players: ScoreboardPlayer[];
-  scoreInputs: Record<number, string>;
-  onChange: (seat: number, val: string) => void;
-  onSubmit: () => void;
-  onClose: () => void;
-  roundNumber: number;
-}) {
-  const firstInputRef = useRef<HTMLInputElement>(null);
+      <ScoreSheet
+        open={scoringOpen}
+        mode={editingRound == null ? "new" : "edit"}
+        roundNumber={editingRound == null ? rounds.length + 1 : editingRound + 1}
+        players={sheetPlayers}
+        values={scoreInputs}
+        totals={totals}
+        previousRound={editingRound == null ? null : rounds[editingRound] ?? null}
+        saving={saving}
+        onChange={changeScore}
+        onAdjust={adjustScore}
+        onSubmit={submitScores}
+        onClose={() => setScoringOpen(false)}
+      />
 
-  useEffect(() => {
-    firstInputRef.current?.focus();
-    firstInputRef.current?.select();
-  }, []);
+      <Dialog open={shareOpen} titleId="share-title" onClose={() => setShareOpen(false)}>
+        <div className="sheet-head">
+          <h3 id="share-title">Share this board</h3>
+          <button type="button" className="icon-btn" onClick={() => setShareOpen(false)} aria-label="Close share dialog">
+            <CloseIcon size={16} />
+          </button>
+        </div>
+        <p>Anyone with the link can watch the scores update. Sending it does not let them change the score.</p>
+        <p className="share-code dialog-code">{gameId}</p>
+        <label className="field-label" htmlFor="share-url">Link</label>
+        <input
+          id="share-url"
+          className="td-input share-field"
+          readOnly
+          value={link}
+          data-autofocus
+          onFocus={(event) => event.target.select()}
+        />
+        <div className="sheet-actions">
+          <BtnSecondary type="button" onClick={copyLink}>Copy link</BtnSecondary>
+          {canNativeShare && (
+            <BtnPrimary type="button" onClick={shareNative}>Share…</BtnPrimary>
+          )}
+        </div>
+      </Dialog>
 
-  const handleKeyDown = (
-    e: React.KeyboardEvent<HTMLInputElement>,
-    idx: number,
-  ) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      if (idx < players.length - 1) {
-        // Move focus to next input
-        const next = document.getElementById(
-          `score-input-${idx + 1}`,
-        ) as HTMLInputElement | null;
-        next?.focus();
-        next?.select();
-      } else {
-        onSubmit();
-      }
-    }
-  };
+      <Dialog open={undoOpen} titleId="undo-title" onClose={() => setUndoOpen(false)}>
+        <div className="sheet-head">
+          <h3 id="undo-title">Remove the last round?</h3>
+          <button type="button" className="icon-btn" onClick={() => setUndoOpen(false)} aria-label="Cancel undo">
+            <CloseIcon size={16} />
+          </button>
+        </div>
+        <p>Round {rounds.length} comes off the board for everyone.</p>
+        {rounds.length > 0 && (
+          <ul className="undo-list">
+            {seated.map((player) => (
+              <li key={player.seat}>
+                <span>{player.name}</span>
+                <span>{rounds[rounds.length - 1]?.[player.seat] ?? 0}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="sheet-actions">
+          <BtnSecondary type="button" data-autofocus onClick={() => setUndoOpen(false)}>Keep round</BtnSecondary>
+          <button type="button" className="btn-destructive" onClick={undoRound}>Remove round</button>
+        </div>
+      </Dialog>
 
-  return (
-    <div className="modal-scroll-overlay">
-      <div className="modal-scroll">
-        <div className="modal-inner">
-          {/* Header */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "flex-start",
-              justifyContent: "space-between",
-              marginBottom: 16,
-            }}
-          >
-            <h3>
-              Round {roundNumber} Scores
-            </h3>
-            <button
-              onClick={onClose}
-              style={{
-                background: "transparent",
-                border: "none",
-                cursor: "pointer",
-                color: "var(--ink-faint)",
-                padding: 2,
-                marginTop: 2,
-              }}
-              aria-label="Close"
-            >
+      <Dialog open={endConfirmOpen} titleId="finish-title" onClose={() => setEndConfirmOpen(false)}>
+        <div className="sheet-head">
+          <h3 id="finish-title">Finish this game?</h3>
+          <button type="button" className="icon-btn" onClick={() => setEndConfirmOpen(false)} aria-label="Keep playing">
+            <CloseIcon size={16} />
+          </button>
+        </div>
+        <p>
+          This locks the board and saves the final scores. Everyone watching will see the result.
+          You can deal a new game with the same players afterward.
+        </p>
+        {rounds.length === 0 && <p>No rounds have been scored yet.</p>}
+        <div className="sheet-actions">
+          <BtnSecondary type="button" data-autofocus onClick={() => setEndConfirmOpen(false)}>Keep playing</BtnSecondary>
+          <button type="button" className="btn-destructive" onClick={endGame}>Finish game</button>
+        </div>
+      </Dialog>
+
+      <Dialog open={addOpen} titleId="add-title" onClose={() => setAddOpen(false)}>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!saving) submitAdd();
+          }}
+        >
+          <div className="sheet-head">
+            <h3 id="add-title">Add a player</h3>
+            <button type="button" className="icon-btn" onClick={() => setAddOpen(false)} aria-label="Cancel add player">
               <CloseIcon size={16} />
             </button>
           </div>
-
-          {/* Player score inputs */}
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 12,
-              marginBottom: 20,
-            }}
-          >
-            {players.map((player, idx) => (
-              <div
-                key={player.seat}
-                style={{ display: "flex", alignItems: "center", gap: 12 }}
-              >
-                <label
-                  htmlFor={`score-input-${idx}`}
-                  style={{
-                    flex: 1,
-                    fontFamily: "var(--sans)",
-                    fontWeight: 600,
-                    fontSize: 14,
-                    color: "var(--ink-soft)",
-                    cursor: "pointer",
-                  }}
-                >
-                  {player.name}
-                </label>
-                <input
-                  id={`score-input-${idx}`}
-                  ref={idx === 0 ? firstInputRef : undefined}
-                  type="number"
-                  inputMode="numeric"
-                  value={scoreInputs[player.seat] ?? "0"}
-                  onChange={(e) => onChange(player.seat, e.target.value)}
-                  onFocus={(e) => e.target.select()}
-                  onKeyDown={(e) => handleKeyDown(e, idx)}
-                  className="td-input"
-                  style={{
-                    width: 80,
-                    textAlign: "right",
-                    fontFamily: "var(--mono)",
-                    fontWeight: 700,
-                    fontSize: 16,
-                    fontVariantNumeric: "tabular-nums",
-                  }}
-                />
-              </div>
-            ))}
+          <p>They start at zero for rounds already scored. Edit a round if they were playing the whole time.</p>
+          <label className="field-label" htmlFor="add-player-name">Name</label>
+          <input
+            id="add-player-name"
+            className="td-input"
+            data-autofocus
+            value={addName}
+            maxLength={24}
+            autoComplete="off"
+            autoCapitalize="words"
+            placeholder="Name"
+            onChange={(event) => setAddName(event.target.value)}
+          />
+          <div className="sheet-actions">
+            <BtnSecondary type="button" onClick={() => setAddOpen(false)} disabled={saving}>Cancel</BtnSecondary>
+            <BtnPrimary type="submit" disabled={saving}>{saving ? "Adding…" : "Add player"}</BtnPrimary>
           </div>
-
-          {/* Actions */}
-          <div style={{ display: "flex", gap: 10 }}>
-            <BtnSecondary
-              onClick={onClose}
-              style={{ flex: 1, marginBottom: 0 }}
-              type="button"
-            >
-              Cancel
-            </BtnSecondary>
-            <BtnPrimary
-              onClick={onSubmit}
-              style={{ flex: 1, marginBottom: 0 }}
-              type="button"
-            >
-              Submit
-            </BtnPrimary>
-          </div>
-        </div>
-      </div>
+        </form>
+      </Dialog>
     </div>
   );
 }

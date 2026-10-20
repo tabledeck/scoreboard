@@ -17,10 +17,23 @@ export const EndGameMsg = z.object({
   type: z.literal("end_game"),
 });
 
+export const EditRoundMsg = z.object({
+  type: z.literal("edit_round"),
+  roundIndex: z.number().int().nonnegative(),
+  scores: z.array(z.number()),
+});
+
+export const AddPlayerMsg = z.object({
+  type: z.literal("add_player"),
+  name: z.string().min(1).max(24),
+});
+
 export const ClientMessage = z.discriminatedUnion("type", [
   SubmitScoresMsg,
   UndoRoundMsg,
   EndGameMsg,
+  EditRoundMsg,
+  AddPlayerMsg,
 ]);
 
 export type ClientMessage = z.infer<typeof ClientMessage>;
@@ -45,6 +58,20 @@ export interface GameEndedMsg {
   totals: number[];
 }
 
+export interface RoundEditedMsg {
+  type: "round_edited";
+  rounds: number[][];
+  totals: number[];
+  roundIndex: number;
+}
+
+export interface PlayerAddedMsg {
+  type: "player_added";
+  players: ScoreboardState["players"];
+  rounds: number[][];
+  totals: number[];
+}
+
 export interface GameStateMsg {
   type: "game_state";
   state: ScoreboardState;
@@ -65,6 +92,8 @@ export type ServerMessage =
   | GameStateMsg
   | RoundSubmittedMsg
   | RoundUndoneMsg
+  | RoundEditedMsg
   | GameEndedMsg
+  | PlayerAddedMsg
   | PlayerJoinedMsg
   | PlayerDisconnectedMsg;
